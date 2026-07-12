@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AURA — ניהול לקוחות</title>
+  <style>
+    :root {
+      --bg: #f5f3ef;
+      --panel: #ffffff;
+      --ink: #26201a;
+      --muted: #7a7167;
+      --line: #e4ded4;
+      --accent: #b8901f;
+      --accent-ink: #ffffff;
+      --danger: #b23b2e;
+      --ok: #2f7d46;
+      --radius: 10px;
+      --shadow: 0 1px 2px rgba(38,32,26,.06), 0 8px 24px rgba(38,32,26,.05);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #191512; --panel: #221d18; --ink: #ece5db; --muted: #9d9488;
+        --line: #362f27; --accent: #d4a63a; --accent-ink: #1a1510;
+        --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #191512; --panel: #221d18; --ink: #ece5db; --muted: #9d9488;
+      --line: #362f27; --accent: #d4a63a; --accent-ink: #1a1510;
+    }
+    :root[data-theme="light"] {
+      --bg: #f5f3ef; --panel: #ffffff; --ink: #26201a; --muted: #7a7167;
+      --line: #e4ded4; --accent: #b8901f; --accent-ink: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font-family: "Segoe UI", "Heebo", "Assistant", system-ui, -apple-system, Arial, sans-serif;
+      font-size: 15px; line-height: 1.5;
+    }
+    h1, h2, h3 { margin: 0; font-weight: 650; }
+    button { font: inherit; cursor: pointer; }
+    input, select, textarea {
+      font: inherit; width: 100%; padding: 8px 10px; color: var(--ink);
+      background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    }
+    input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    textarea { resize: vertical; min-height: 64px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+    .field { margin-bottom: 14px; }
+
+    /* --- Login gate --- */
+    #gate {
+      position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg);
+    }
+    #gate .card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 28px; width: min(360px, 90vw); box-shadow: var(--shadow); text-align: center;
+    }
+    .brand { font-size: 26px; font-weight: 700; letter-spacing: .12em; color: var(--accent); }
+    .brand-sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+    /* --- Layout --- */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    }
+    header .brand { font-size: 20px; }
+    .layout { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 57px); }
+    @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+
+    aside { border-inline-end: 1px solid var(--line); background: var(--panel); padding: 14px; }
+    .list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+    .client-item {
+      text-align: right; background: transparent; border: 1px solid transparent;
+      border-radius: 8px; padding: 10px; width: 100%; color: var(--ink);
+    }
+    .client-item:hover { background: var(--bg); }
+    .client-item.active { border-color: var(--accent); background: var(--bg); }
+    .client-item .biz { font-weight: 600; }
+    .client-item .meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; margin-top: 2px; }
+    .pill {
+      font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
+    }
+    .pill.paused { color: var(--danger); }
+
+    main { padding: 22px; max-width: 820px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+    fieldset { border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin: 0 0 18px; }
+    legend { padding: 0 8px; font-weight: 600; color: var(--accent); }
+
+    .btn {
+      border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+      padding: 9px 16px; border-radius: 8px;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+    .btn.danger { color: var(--danger); border-color: var(--danger); }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .spacer { flex: 1; }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    #toast {
+      position: fixed; inset-block-end: 20px; inset-inline-start: 50%; transform: translateX(50%);
+      background: var(--ink); color: var(--bg); padding: 10px 18px; border-radius: 999px;
+      opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 50;
+    }
+    #toast.show { opacity: 1; }
+    .ghost-hint { color: var(--muted); text-align: center; margin-top: 40px; }
+    .theme-toggle { background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; color: var(--ink); }
+  </style>
+</head>
+<body>
+  <!-- Login gate -->
+  <div id="gate">
+    <div class="card">
+      <div class="brand">AURA</div>
+      <div class="brand-sub">מערכת ניהול לקוחות</div>
+      <div class="field" style="margin-top:20px">
+        <input id="pass" type="password" placeholder="סיסמת ניהול" autocomplete="current-password" />
+      </div>
+      <button class="btn primary" style="width:100%" onclick="login()">כניסה</button>
+      <div id="gateErr" class="hint" style="color:var(--danger)"></div>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" hidden>
+    <header>
+      <div class="brand">AURA</div>
+      <div class="actions">
+        <button class="theme-toggle" onclick="toggleTheme()">מצב תצוגה</button>
+        <button class="btn" onclick="newClient()">+ לקוח חדש</button>
+        <button class="btn" onclick="logout()">יציאה</button>
+      </div>
+    </header>
+    <div class="layout">
+      <aside>
+        <h3>לקוחות</h3>
+        <div id="list" class="list"></div>
+      </aside>
+      <main>
+        <div id="editor"></div>
+      </main>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let clients = [];
+    let current = null; // phone or null (new)
+
+    // --- theme ---
+    function toggleTheme() {
+      const root = document.documentElement;
+      const now = root.getAttribute('data-theme')
+        || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      const next = now === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      localStorage.setItem('aura_theme', next);
+    }
+    (function initTheme(){ const t = localStorage.getItem('aura_theme'); if (t) document.documentElement.setAttribute('data-theme', t); })();
+
+    // --- api (session cookie sent automatically) ---
+    async function api(method, path, body) {
+      const res = await fetch('/api' + path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (res.status === 401) { showGate(); throw new Error('unauthorized'); }
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+      return res.status === 204 ? null : res.json();
+    }
+
+    function toast(msg) {
+      const t = $('toast'); t.textContent = msg; t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2600);
+    }
+
+    // --- auth ---
+    function showApp() { $('gate').hidden = true; $('app').hidden = false; }
+    function showGate() { $('app').hidden = true; $('gate').hidden = false; }
+
+    async function login() {
+      const password = $('pass').value;
+      $('gateErr').textContent = '';
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ password }),
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))).error || 'שגיאה';
+          $('gateErr').textContent = err;
+          return;
+        }
+        $('pass').value = '';
+        showApp();
+        await loadClients();
+      } catch { $('gateErr').textContent = 'תקלת רשת, נסו שוב'; }
+    }
+
+    async function logout() {
+      try { await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
+      showGate();
+    }
+
+    // --- clients list ---
+    async function loadClients() {
+      clients = await api('GET', '/clients');
+      renderList();
+      if (current) selectClient(current);
+      else if (!clients.length) newClient();
+      else selectClient(clients[0].phone);
+    }
+    function renderList() {
+      const el = $('list');
+      el.innerHTML = '';
+      clients.forEach((c) => {
+        const b = document.createElement('button');
+        b.className = 'client-item' + (c.phone === current ? ' active' : '');
+        b.onclick = () => selectClient(c.phone);
+        b.innerHTML = `<div class="biz"></div><div class="meta">
+          <span class="pkg"></span>
+          <span class="pill ${c.status !== 'active' ? 'paused' : ''}">${c.status === 'active' ? 'פעיל' : 'מושהה'}</span>
+        </div>`;
+        b.querySelector('.biz').textContent = c.business_name;
+        b.querySelector('.pkg').textContent = c.package === 'premium' ? 'מורחבת' : 'בסיסית';
+        el.appendChild(b);
+      });
+    }
+
+    // --- editor ---
+    const P = (v) => (v == null ? '' : v);
+    function arr(v) { return Array.isArray(v) ? v.join('\n') : P(v); }
+
+    function editorTemplate(c) {
+      const pr = c.profile || {};
+      const bi = pr.brand_identity || {};
+      return `
+      <div class="actions" style="margin-bottom:16px">
+        <h2>${c.phone ? 'עריכת לקוח' : 'לקוח חדש'}</h2>
+        <div class="spacer"></div>
+        ${c.phone ? '<button class="btn" onclick="generateNow()">✨ צור תוכן עכשיו</button>' : ''}
+        ${c.phone ? '<button class="btn danger" onclick="removeClient()">מחיקה</button>' : ''}
+      </div>
+
+      <fieldset>
+        <legend>פרטי קשר וחבילה</legend>
+        <div class="row">
+          <div class="field"><label>שם איש קשר</label><input id="f_name" value="${P(c.name)}"></div>
+          <div class="field"><label>שם העסק</label><input id="f_business" value="${P(c.business_name)}"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>טלפון ווטסאפ (ספרות בלבד, כולל קידומת מדינה)</label><input id="f_phone" value="${P(c.phone)}" placeholder="972501234567"></div>
+          <div class="field"><label>שעת שליחה יומית</label><input id="f_hour" type="number" min="0" max="23" value="${c.send_hour ?? 8}"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>חבילה</label>
+            <select id="f_package">
+              <option value="basic" ${c.package !== 'premium' ? 'selected' : ''}>בסיסית — 2 סטוריז/יום, קרוסלה שבועית</option>
+              <option value="premium" ${c.package === 'premium' ? 'selected' : ''}>מורחבת — 4 סטוריז/יום, 2 קרוסלות, וידאו</option>
+            </select>
+          </div>
+          <div class="field"><label>סטטוס</label>
+            <select id="f_status">
+              <option value="active" ${c.status !== 'paused' ? 'selected' : ''}>פעיל</option>
+              <option value="paused" ${c.status === 'paused' ? 'selected' : ''}>מושהה</option>
+            </select>
+          </div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>אפיון העסק</legend>
+        <div class="field"><label>על העסק</label><textarea id="p_about">${P(pr.about)}</textarea></div>
+        <div class="field"><label>קהל היעד</label><textarea id="p_audience">${P(pr.audience)}</textarea></div>
+        <div class="field"><label>שירותים / מוצרים (שורה לכל אחד)</label><textarea id="p_services">${arr(pr.services)}</textarea></div>
+        <div class="field"><label>בידול — מה מייחד את העסק (שורה לכל אחד)</label><textarea id="p_diff">${arr(pr.differentiators)}</textarea></div>
+        <div class="field"><label>מסרים מרכזיים (שורה לכל אחד)</label><textarea id="p_messages">${arr(pr.key_messages)}</textarea></div>
+        <div class="field"><label>מטרות שיווקיות</label><textarea id="p_goals">${P(pr.goals)}</textarea></div>
+        <div class="field"><label>קווים אדומים — מה אסור (שורה לכל אחד)</label><textarea id="p_nogo">${arr(pr.no_go)}</textarea></div>
+      </fieldset>
+
+      <fieldset>
+        <legend>זהות מותגית וויזואלית</legend>
+        <div class="field"><label>טון דיבור</label><textarea id="b_tone">${P(bi.tone)}</textarea></div>
+        <div class="field"><label>צבעים שולטים (שורה לכל צבע, למשל: #C9A227 זהב)</label><textarea id="b_colors">${arr(bi.dominant_colors)}</textarea>
+          <div class="hint">הצבעים נכנסים אוטומטית לכל פרומפט של תמונה ווידאו.</div></div>
+        <div class="field"><label>סגנון ויזואלי</label><textarea id="b_style">${P(bi.visual_style)}</textarea></div>
+        <div class="field"><label>הערות שפה (לשון פנייה, אימוג'י וכו')</label><textarea id="b_lang">${P(bi.language_notes)}</textarea></div>
+      </fieldset>
+
+      <div class="actions">
+        <button class="btn primary" onclick="saveClient()">שמירה</button>
+        <span class="hint">התוכן נוצר לפי הפרופיל הזה — ככל שהוא מדויק יותר, התוצאה ממותגת יותר.</span>
+      </div>`;
+    }
+
+    function selectClient(phone) {
+      current = phone;
+      const c = clients.find((x) => x.phone === phone);
+      if (!c) return;
+      $('editor').innerHTML = editorTemplate(c);
+      renderList();
+    }
+    function newClient() {
+      current = null;
+      $('editor').innerHTML = editorTemplate({ send_hour: 8, package: 'basic', status: 'active', profile: {} });
+      renderList();
+    }
+
+    const lines = (id) => $(id).value.split('\n').map((s) => s.trim()).filter(Boolean);
+    const val = (id) => $(id).value.trim();
+
+    async function saveClient() {
+      const body = {
+        phone: val('f_phone'),
+        name: val('f_name'),
+        business_name: val('f_business'),
+        package: val('f_package'),
+        status: val('f_status'),
+        send_hour: parseInt($('f_hour').value, 10) || 8,
+        profile: {
+          about: val('p_about'),
+          audience: val('p_audience'),
+          services: lines('p_services'),
+          differentiators: lines('p_diff'),
+          key_messages: lines('p_messages'),
+          goals: val('p_goals'),
+          no_go: lines('p_nogo'),
+          brand_identity: {
+            tone: val('b_tone'),
+            dominant_colors: lines('b_colors'),
+            visual_style: val('b_style'),
+            language_notes: val('b_lang'),
+          },
+        },
+      };
+      if (!body.phone || !body.name || !body.business_name) {
+        return toast('חובה למלא שם, שם עסק וטלפון');
+      }
+      try {
+        const saved = await api('POST', '/clients', body);
+        current = saved.phone;
+        await loadClients();
+        toast('נשמר בהצלחה');
+      } catch (e) { toast('שגיאה: ' + e.message); }
+    }
+
+    async function removeClient() {
+      if (!current || !confirm('למחוק את הלקוח? הפעולה בלתי הפיכה.')) return;
+      await api('DELETE', '/clients/' + current);
+      current = null;
+      await loadClients();
+      toast('הלקוח נמחק');
+    }
+
+    async function generateNow() {
+      if (!current) return;
+      try {
+        await api('POST', '/clients/' + current + '/generate');
+        toast('יצירת תוכן החלה — יגיע לווטסאפ בקרוב');
+      } catch (e) { toast('שגיאה: ' + e.message); }
+    }
+
+    // Submit password on Enter
+    $('pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+
+    // On load: if the session cookie is still valid, skip the gate.
+    (async function boot() {
+      try {
+        await api('GET', '/clients');
+        showApp();
+        await loadClients();
+      } catch {
+        showGate();
+      }
+    })();
+  </script>
+</body>
+</html>
