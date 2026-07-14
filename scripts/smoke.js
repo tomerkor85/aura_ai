@@ -1,6 +1,6 @@
 // Smoke test: verifies modules load, DB schema builds, and prompts render. No API calls.
 import { PACKAGES } from '../src/config.js';
-import { upsertClient, getClientByPhone, getImageState, setImageState } from '../src/db.js';
+import { upsertClient, getClientByPhone, getImageState, startImageState, recordImageEdit } from '../src/db.js';
 import { buildSystemPrompt, buildDailyPrompt } from '../src/prompts.js';
 import { parseIncoming, phoneToChatId } from '../src/greenapi.js';
 // Import the heavy modules to catch load/syntax errors (no API calls made).
@@ -41,12 +41,16 @@ if (incoming?.phone !== '972500000000' || incoming?.text !== 'שלום') {
 if (phoneToChatId('972500000000') !== '972500000000@c.us') throw new Error('phoneToChatId failed');
 if (!PACKAGES.basic || !PACKAGES.premium) throw new Error('PACKAGES missing');
 
-// image_state round-trip: create sets snapshot, edit preserves it
-setImageState('972500000000', 'resp_1', client.profile);
+// image_state: create resets counter, edits increment and preserve snapshot
+startImageState('972500000000', 'resp_1', client.profile);
 let st = getImageState('972500000000');
-if (st.last_response_id !== 'resp_1' || !st.brand_snapshot) throw new Error('setImageState create failed');
-setImageState('972500000000', 'resp_2', null); // edit: keep snapshot
+if (st.last_response_id !== 'resp_1' || st.edit_count !== 0 || !st.brand_snapshot) throw new Error('startImageState failed');
+recordImageEdit('972500000000', 'resp_2');
+recordImageEdit('972500000000', 'resp_3');
 st = getImageState('972500000000');
-if (st.last_response_id !== 'resp_2' || !st.brand_snapshot) throw new Error('setImageState edit-preserve failed');
+if (st.last_response_id !== 'resp_3' || st.edit_count !== 2 || !st.brand_snapshot) throw new Error('recordImageEdit failed');
+startImageState('972500000000', 'resp_4', client.profile); // new image resets counter
+st = getImageState('972500000000');
+if (st.edit_count !== 0) throw new Error('edit_count reset on new image failed');
 
-console.log('Smoke test passed: DB, prompts, image_state, module loads all OK.');
+console.log('Smoke test passed: DB, prompts, image_state + edit limits, module loads all OK.');

@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "admin": "node src/admin.js",
     "hash-password": "node scripts/hash-password.js",
+    "check-wa": "node scripts/check-wa.js",
     "send-daily": "node scripts/send-daily.js",
     "smoke": "node scripts/smoke.js"
   },

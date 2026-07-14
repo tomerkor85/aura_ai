@@ -27,6 +27,10 @@ export const config = {
   dailyImages: (process.env.DAILY_IMAGES || 'false').toLowerCase() === 'true',
   tz: process.env.TZ_NAME || 'Asia/Jerusalem',
 
+  // Max edits per single generated image / video before the client must create a new one.
+  maxImageEdits: parseInt(process.env.MAX_IMAGE_EDITS || '3', 10),
+  maxVideoEdits: parseInt(process.env.MAX_VIDEO_EDITS || '1', 10),
+
   // Railway (and most hosts) inject PORT and route the public domain to it.
   adminPort: parseInt(process.env.PORT || process.env.ADMIN_PORT || '3000', 10),
   adminPassword: process.env.ADMIN_PASSWORD || 'change-me',
@@ -52,18 +56,26 @@ export function validateConfig() {
   return missing;
 }
 
-// Packages: what each client receives per day/week
+// Packages: monthly quotas for on-demand generation (conversational, no schedule).
+// - imagesPerMonth: how many NEW images the client may create per calendar month
+// - videosPerMonth: how many videos per month (video is one-shot, no editing)
+// - editsPerImage: how many times a single image may be edited before it locks
+// Adjust these numbers to your actual pricing.
 export const PACKAGES = {
   basic: {
     label: 'חבילה בסיסית',
-    storiesPerDay: 2,
-    carouselDays: [0], // Sunday
-    video: false,
+    imagesPerMonth: 20,
+    videosPerMonth: 0,
+    editsPerImage: 3,
   },
   premium: {
     label: 'חבילה מורחבת',
-    storiesPerDay: 4,
-    carouselDays: [0, 3], // Sunday + Wednesday
-    video: true, // basic product video available
+    imagesPerMonth: 40,
+    videosPerMonth: 4,
+    editsPerImage: 3,
   },
 };
+
+export function packageOf(client) {
+  return PACKAGES[client.package] || PACKAGES.basic;
+}

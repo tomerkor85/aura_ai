@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { config } from './config.js';
 import { buildSystemPrompt, buildDailyPrompt, DAILY_OUTPUT_SCHEMA } from './prompts.js';
-import { appendHistory, getRecentHistory, getImageState, setImageState } from './db.js';
+import { appendHistory, getRecentHistory, getImageState, startImageState, recordImageEdit } from './db.js';
 import { generateVideo } from './visual.js';
 import { createImage, editImage } from './openai_images.js';
 import { sendVisual, sendFileByUrl } from './greenapi.js';
@@ -110,16 +110,29 @@ export async function handleChatMessage(client, userText) {
       try {
         if (tu.name === 'generate_image') {
           const state = getImageState(client.phone);
+          const isEdit = tu.input.mode === 'edit' && state?.last_response_id;
+
+          if (isEdit && state.edit_count >= config.maxImageEdits) {
+            // Edit limit reached — do NOT generate. Tell Claude to inform the client.
+            results.push({
+              type: 'tool_result',
+              tool_use_id: tu.id,
+              content: `Edit limit reached: this image has already been edited ${config.maxImageEdits} times, which is the maximum. Do NOT keep editing. Tell the client (in Hebrew, warmly) that this image reached its edit limit, and they can ask for a NEW image to keep going.`,
+            });
+            continue;
+          }
+
           let result, note;
-          if (tu.input.mode === 'edit' && state?.last_response_id) {
+          if (isEdit) {
             // Follow-up edit of the last image, keeping OpenAI conversation context.
             result = await editImage(state.last_response_id, tu.input.prompt);
-            setImageState(client.phone, result.responseId, null); // preserve original brand snapshot
-            note = 'Edited the previous image and sent it to the client on WhatsApp.';
+            recordImageEdit(client.phone, result.responseId);
+            const used = state.edit_count + 1;
+            note = `Edited the previous image (edit ${used} of ${config.maxImageEdits}) and sent it. ${config.maxImageEdits - used} edits left on this image.`;
           } else {
             // New image. Snapshot the brand profile so future edits stay consistent.
             result = await createImage(tu.input.prompt);
-            setImageState(client.phone, result.responseId, client.profile);
+            startImageState(client.phone, result.responseId, client.profile);
             note = tu.input.mode === 'edit'
               ? 'No previous image to edit, so created a new one and sent it to the client.'
               : 'Image generated and sent to the client on WhatsApp successfully.';

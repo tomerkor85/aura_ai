@@ -43,30 +43,44 @@ CREATE TABLE IF NOT EXISTS daily_log (
 -- Tracks the last editable image generated per client (OpenAI Responses API).
 -- brand_snapshot = the brand profile captured at creation time, so later edits
 -- ("make it bigger") stay consistent even if the profile changes afterward.
+-- edit_count = how many edits have been applied to the current image (cap enforced in agent).
 CREATE TABLE IF NOT EXISTS image_state (
   phone            TEXT PRIMARY KEY,
   last_response_id TEXT,
   brand_snapshot   TEXT,
+  edit_count       INTEGER NOT NULL DEFAULT 0,
   updated_at       TEXT DEFAULT (datetime('now'))
 );
 `);
+
+// Migration for DBs created before edit_count existed.
+try { db.exec('ALTER TABLE image_state ADD COLUMN edit_count INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
 
 export function getImageState(phone) {
   return db.prepare('SELECT * FROM image_state WHERE phone = ?').get(phone) || null;
 }
 
-// Update the last response id. If a snapshot is passed (on a fresh create) it is
-// stored; on edits pass null to preserve the original snapshot.
-export function setImageState(phone, responseId, snapshot) {
-  const snap = snapshot ? JSON.stringify(snapshot) : null;
+// A brand-new image: store response id + brand snapshot, reset the edit counter.
+export function startImageState(phone, responseId, snapshot) {
   db.prepare(`
-    INSERT INTO image_state (phone, last_response_id, brand_snapshot, updated_at)
-    VALUES (@phone, @rid, @snap, datetime('now'))
+    INSERT INTO image_state (phone, last_response_id, brand_snapshot, edit_count, updated_at)
+    VALUES (@phone, @rid, @snap, 0, datetime('now'))
     ON CONFLICT(phone) DO UPDATE SET
       last_response_id = @rid,
-      brand_snapshot = COALESCE(@snap, brand_snapshot),
+      brand_snapshot = @snap,
+      edit_count = 0,
       updated_at = datetime('now')
-  `).run({ phone, rid: responseId, snap });
+  `).run({ phone, rid: responseId, snap: JSON.stringify(snapshot) });
+}
+
+// An edit of the current image: advance the response id, increment the counter,
+// keep the original brand snapshot.
+export function recordImageEdit(phone, responseId) {
+  db.prepare(`
+    UPDATE image_state
+    SET last_response_id = @rid, edit_count = edit_count + 1, updated_at = datetime('now')
+    WHERE phone = @phone
+  `).run({ phone, rid: responseId });
 }
 
 export function getClientByPhone(phone) {

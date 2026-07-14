@@ -31,6 +31,13 @@ export async function sendText(phone, message) {
   return post('sendMessage', { chatId: phoneToChatId(phone), message });
 }
 
+// Returns the instance auth state, e.g. { stateInstance: 'authorized' }
+export async function getStateInstance() {
+  const res = await fetch(url('getStateInstance'), { method: 'GET' });
+  if (!res.ok) throw new Error(`Green API getStateInstance failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
 // Send an image from a base64 payload via multipart upload
 export async function sendImageBase64(phone, base64Data, { fileName = 'aura.png', caption = '' } = {}) {
   const buffer = Buffer.from(base64Data, 'base64');

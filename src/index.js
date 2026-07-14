@@ -1,9 +1,7 @@
-import cron from 'node-cron';
 import { config, validateConfig } from './config.js';
 import { getClientByPhone } from './db.js';
 import { receiveNotification, deleteNotification, parseIncoming, sendText } from './greenapi.js';
 import { handleChatMessage } from './agent.js';
-import { runDailyTick } from './daily.js';
 import { startAdmin } from './admin.js';
 
 const missing = validateConfig();
@@ -14,7 +12,7 @@ if (missing.length) {
 }
 
 console.log('AURA is starting...');
-console.log(`Model: ${config.claudeModel} | TZ: ${config.tz} | Daily images: ${config.dailyImages}`);
+console.log(`Model: ${config.claudeModel} | conversational mode (no scheduled sends)`);
 
 // Start the admin panel (client management UI) alongside the agent.
 startAdmin();
@@ -65,14 +63,8 @@ async function handleIncoming(phone, text) {
   }
 }
 
-// --- Daily content scheduler: every hour on the hour ---
-cron.schedule('0 * * * *', () => {
-  runDailyTick().catch((err) => console.error('[daily] tick error:', err.message));
-});
-
-// Also run once at startup in case we restarted past a send hour
-runDailyTick().catch((err) => console.error('[daily] startup tick error:', err.message));
-
+// AURA is conversational: it responds when a client messages, and content can be
+// generated on demand from the admin panel ("Generate now"). No scheduled sends.
 pollLoop();
 
 process.on('SIGINT', () => {
