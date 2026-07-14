@@ -21,8 +21,14 @@ export const config = {
     // Model for the Responses API (conversational, editable images). Confirm the
     // exact model name in your OpenAI account.
     responsesModel: process.env.OPENAI_RESPONSES_MODEL || 'gpt-5.6',
+    // Model for the chat/text engine (copy, hooks, tool calling). Confirm in your account.
+    textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5.6',
   },
   imageProvider: (process.env.IMAGE_PROVIDER || 'byteplus').toLowerCase(),
+
+  // Which provider powers the text/chat engine: 'openai' or 'anthropic'.
+  // Switch by setting TEXT_PROVIDER and restarting.
+  textProvider: (process.env.TEXT_PROVIDER || 'openai').toLowerCase(),
 
   dailyImages: (process.env.DAILY_IMAGES || 'false').toLowerCase() === 'true',
   tz: process.env.TZ_NAME || 'Asia/Jerusalem',
@@ -52,7 +58,9 @@ export function validateConfig() {
   const missing = [];
   if (!config.greenApi.idInstance) missing.push('GREEN_API_ID_INSTANCE');
   if (!config.greenApi.token) missing.push('GREEN_API_TOKEN');
-  if (!config.anthropicApiKey) missing.push('ANTHROPIC_API_KEY');
+  // Images always use OpenAI (Responses API); the text engine uses the selected provider.
+  if (!config.openai.apiKey) missing.push('OPENAI_API_KEY');
+  if (config.textProvider === 'anthropic' && !config.anthropicApiKey) missing.push('ANTHROPIC_API_KEY');
   return missing;
 }
 

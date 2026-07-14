@@ -259,15 +259,12 @@
           <div class="field"><label>שם איש קשר</label><input id="f_name" value="${P(c.name)}"></div>
           <div class="field"><label>שם העסק</label><input id="f_business" value="${P(c.business_name)}"></div>
         </div>
-        <div class="row">
-          <div class="field"><label>טלפון ווטסאפ (ספרות בלבד, כולל קידומת מדינה)</label><input id="f_phone" value="${P(c.phone)}" placeholder="972501234567"></div>
-          <div class="field"><label>שעת שליחה יומית</label><input id="f_hour" type="number" min="0" max="23" value="${c.send_hour ?? 8}"></div>
-        </div>
+        <div class="field"><label>טלפון ווטסאפ (ספרות בלבד, כולל קידומת מדינה)</label><input id="f_phone" value="${P(c.phone)}" placeholder="972501234567"></div>
         <div class="row">
           <div class="field"><label>חבילה</label>
             <select id="f_package">
-              <option value="basic" ${c.package !== 'premium' ? 'selected' : ''}>בסיסית — 2 סטוריז/יום, קרוסלה שבועית</option>
-              <option value="premium" ${c.package === 'premium' ? 'selected' : ''}>מורחבת — 4 סטוריז/יום, 2 קרוסלות, וידאו</option>
+              <option value="basic" ${c.package !== 'premium' ? 'selected' : ''}>בסיסית</option>
+              <option value="premium" ${c.package === 'premium' ? 'selected' : ''}>מורחבת (כולל וידאו)</option>
             </select>
           </div>
           <div class="field"><label>סטטוס</label>
@@ -314,7 +311,7 @@
     }
     function newClient() {
       current = null;
-      $('editor').innerHTML = editorTemplate({ send_hour: 8, package: 'basic', status: 'active', profile: {} });
+      $('editor').innerHTML = editorTemplate({ package: 'basic', status: 'active', profile: {} });
       renderList();
     }
 
@@ -328,7 +325,6 @@
         business_name: val('f_business'),
         package: val('f_package'),
         status: val('f_status'),
-        send_hour: parseInt($('f_hour').value, 10) || 8,
         profile: {
           about: val('p_about'),
           audience: val('p_audience'),
