@@ -31,9 +31,12 @@ export async function runConversation({ system, history, tools, executeTool }) {
     ...history.map((m) => ({ role: m.role, content: m.content })),
   ];
 
+  const body = { model: config.openai.textModel, tools: oaTools };
+  if (config.openai.reasoningEffort) body.reasoning_effort = config.openai.reasoningEffort;
+
   let guard = 0;
   while (true) {
-    const data = await chat({ model: config.openai.textModel, messages, tools: oaTools });
+    const data = await chat({ ...body, messages });
     const msg = data.choices?.[0]?.message;
     if (!msg) throw new Error('OpenAI chat returned no message');
 

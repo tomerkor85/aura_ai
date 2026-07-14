@@ -27,6 +27,7 @@ async function pollLoop() {
       if (!notification) continue; // long-poll returned empty; loop again
 
       const { receiptId, body } = notification;
+      console.log(`[poll] notification: ${body?.typeWebhook || 'unknown'}`);
       try {
         const incoming = parseIncoming(body);
         if (incoming) {
@@ -52,13 +53,16 @@ async function handleIncoming(phone, text) {
   if (client.status !== 'active') return;
 
   try {
+    console.log(`[agent] generating reply for ${phone} (provider: ${config.textProvider})...`);
     const reply = await handleChatMessage(client, text);
     if (reply) {
       await sendText(phone, reply);
       console.log(`[out] ${phone}: ${reply.slice(0, 80)}`);
+    } else {
+      console.log(`[agent] no text reply (media may have been sent via a tool).`);
     }
   } catch (err) {
-    console.error(`[agent] error for ${phone}:`, err.message);
+    console.error(`[agent] error for ${phone}:`, err.stack || err.message);
     await sendText(phone, 'אופס, נתקלתי בתקלה רגעית. נסו לשלוח שוב בעוד רגע 🙏');
   }
 }

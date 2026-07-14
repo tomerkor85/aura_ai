@@ -1,8 +1,7 @@
-import { config } from './config.js';
 import { getClientByPhone, listActiveClients, appendHistory } from './db.js';
 import { generateDailyContent } from './agent.js';
 import { sendText, sendVisual } from './greenapi.js';
-import { generateImage } from './visual.js';
+import { createImage } from './openai_images.js';
 
 // How many stories the manual "Generate now" button produces.
 const STORIES_PER_PACK = 3;
@@ -15,20 +14,20 @@ async function sendContentPack(client) {
 
   for (let i = 0; i < content.stories.length; i++) {
     const s = content.stories[i];
-    await sendText(client.phone, `*סטורי ${i + 1}:*\n${s.text}\n\n_קונספט ויזואלי:_ ${s.visual_concept}`);
-
-    if (config.dailyImages && s.image_prompt) {
+    // Send the matching branded image first, then its copy, so each story arrives as a pair.
+    if (s.image_prompt) {
       try {
-        const visual = await generateImage(s.image_prompt);
-        await sendVisual(client.phone, visual, { caption: `ויזואל לסטורי ${i + 1}` });
+        const { b64 } = await createImage(s.image_prompt);
+        await sendVisual(client.phone, { type: 'base64', data: b64 }, { caption: `סטורי ${i + 1}` });
       } catch (err) {
         console.error(`[content] image failed for ${client.phone}:`, err.message);
       }
     }
+    await sendText(client.phone, `*סטורי ${i + 1}:*\n${s.text}\n\n_קונספט ויזואלי:_ ${s.visual_concept}`);
   }
 
   await sendText(client.phone, 'רוצה שינוי, גרסה נוספת או ויזואל? פשוט תכתבו לי כאן 💬');
-  appendHistory(client.phone, 'assistant', `[תוכן יזום נשלח: ${content.stories.length} סטוריז]`);
+  appendHistory(client.phone, 'assistant', `[תוכן יזום נשלח: ${content.stories.length} סטוריז + תמונות]`);
   console.log(`[content] Sent to ${client.business_name}`);
 }
 

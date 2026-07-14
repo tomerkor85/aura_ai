@@ -23,6 +23,9 @@ export const config = {
     responsesModel: process.env.OPENAI_RESPONSES_MODEL || 'gpt-5.6',
     // Model for the chat/text engine (copy, hooks, tool calling). Confirm in your account.
     textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5.6',
+    // Reasoning models (e.g. gpt-5.x) require reasoning_effort:'none' when using
+    // function tools in Chat Completions. Set '' to omit for non-reasoning models.
+    reasoningEffort: process.env.OPENAI_REASONING_EFFORT ?? 'none',
   },
   imageProvider: (process.env.IMAGE_PROVIDER || 'byteplus').toLowerCase(),
 

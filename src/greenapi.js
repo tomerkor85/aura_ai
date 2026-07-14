@@ -38,6 +38,18 @@ export async function getStateInstance() {
   return res.json();
 }
 
+// Instance settings — the `incomingWebhook` flag must be 'yes' for incoming
+// messages to be delivered to receiveNotification (our polling loop).
+export async function getSettings() {
+  const res = await fetch(url('getSettings'), { method: 'GET' });
+  if (!res.ok) throw new Error(`Green API getSettings failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export async function setSettings(settings) {
+  return post('setSettings', settings);
+}
+
 // Send an image from a base64 payload via multipart upload
 export async function sendImageBase64(phone, base64Data, { fileName = 'aura.png', caption = '' } = {}) {
   const buffer = Buffer.from(base64Data, 'base64');
