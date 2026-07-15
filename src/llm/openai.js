@@ -18,7 +18,12 @@ const toTools = (tools) =>
   }));
 
 async function chat(body) {
-  const res = await fetch(CHAT_URL, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
+  const res = await fetch(CHAT_URL, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000),
+  });
   if (!res.ok) throw new Error(`OpenAI chat failed: ${res.status} ${await res.text()}`);
   return res.json();
 }
@@ -34,13 +39,17 @@ export async function runConversation({ system, history, tools, executeTool }) {
   const body = { model: config.openai.textModel, tools: oaTools };
   if (config.openai.reasoningEffort) body.reasoning_effort = config.openai.reasoningEffort;
 
+  const MAX_TOOL_ROUNDS = 5;
   let guard = 0;
   while (true) {
-    const data = await chat({ ...body, messages });
+    // After the last allowed tool round, force a plain-text answer so the client
+    // never ends up with an empty reply because the model kept requesting tools.
+    const finalRound = guard >= MAX_TOOL_ROUNDS;
+    const data = await chat({ ...body, messages, ...(finalRound ? { tool_choice: 'none' } : {}) });
     const msg = data.choices?.[0]?.message;
     if (!msg) throw new Error('OpenAI chat returned no message');
 
-    if (msg.tool_calls?.length && guard < 5) {
+    if (msg.tool_calls?.length && !finalRound) {
       guard += 1;
       messages.push(msg); // assistant turn carrying the tool_calls
       for (const tc of msg.tool_calls) {
@@ -64,7 +73,7 @@ export async function structuredContent({ system, prompt, schema }) {
       { role: 'user', content: prompt },
     ],
     response_format: { type: 'json_schema', json_schema: { name: 'content', schema, strict: false } },
-  });
+  }); // chat() applies the request timeout
   const text = data.choices?.[0]?.message?.content;
   if (!text) throw new Error('Structured content returned no text');
   return JSON.parse(text);

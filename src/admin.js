@@ -1,8 +1,8 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config } from './config.js';
-import { listAllClients, getClientByPhone, upsertClient, deleteClient } from './db.js';
+import { config, packageOf } from './config.js';
+import { listAllClients, getClientByPhone, upsertClient, deleteClient, getUsage } from './db.js';
 import { runDailyTick } from './daily.js';
 import {
   verifyPassword, createToken, verifyToken, parseCookie, sessionCookie, clearCookie,
@@ -57,14 +57,27 @@ export function createAdminApp() {
     next();
   });
 
+  // Attach this month's consumption + the package quotas for the panel.
+  function withUsage(client) {
+    const pkg = packageOf(client);
+    const used = getUsage(client.phone);
+    return {
+      ...client,
+      usage: {
+        images: used.images, imagesLimit: pkg.imagesPerMonth,
+        videos: used.videos, videosLimit: pkg.videosPerMonth,
+      },
+    };
+  }
+
   app.get('/api/clients', (req, res) => {
-    res.json(listAllClients());
+    res.json(listAllClients().map(withUsage));
   });
 
   app.get('/api/clients/:phone', (req, res) => {
     const c = getClientByPhone(req.params.phone);
     if (!c) return res.status(404).json({ error: 'not found' });
-    res.json(c);
+    res.json(withUsage(c));
   });
 
   app.post('/api/clients', (req, res) => {
@@ -78,8 +91,7 @@ export function createAdminApp() {
       name: b.name,
       business_name: b.business_name,
       package: b.package || 'basic',
-      status: b.status || 'active',
-      send_hour: Number.isInteger(b.send_hour) ? b.send_hour : 8,
+      status: ['active', 'suspended', 'canceled'].includes(b.status) ? b.status : 'active',
       profile: b.profile || {},
     });
     res.json(getClientByPhone(phone));
@@ -95,7 +107,7 @@ export function createAdminApp() {
     const phone = req.params.phone;
     const c = getClientByPhone(phone);
     if (!c) return res.status(404).json({ error: 'not found' });
-    runDailyTick({ force: true, onlyPhone: phone }).catch((err) =>
+    runDailyTick({ onlyPhone: phone }).catch((err) =>
       console.error('[admin] generate error:', err.message)
     );
     res.json({ ok: true, message: 'Generation started; content will arrive on WhatsApp shortly.' });

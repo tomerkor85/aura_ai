@@ -230,7 +230,7 @@
         b.onclick = () => selectClient(c.phone);
         b.innerHTML = `<div class="biz"></div><div class="meta">
           <span class="pkg"></span>
-          <span class="pill ${c.status !== 'active' ? 'paused' : ''}">${c.status === 'active' ? 'פעיל' : 'מושהה'}</span>
+          <span class="pill ${c.status !== 'active' ? 'paused' : ''}">${{ active: 'פעיל', suspended: 'מושהה', canceled: 'מבוטל' }[c.status] || c.status}</span>
         </div>`;
         b.querySelector('.biz').textContent = c.business_name;
         b.querySelector('.pkg').textContent = c.package === 'premium' ? 'מורחבת' : 'בסיסית';
@@ -248,6 +248,7 @@
       return `
       <div class="actions" style="margin-bottom:16px">
         <h2>${c.phone ? 'עריכת לקוח' : 'לקוח חדש'}</h2>
+        ${c.usage ? `<span class="pill" title="שימוש החודש מול מכסת החבילה">🖼 ${c.usage.images}/${c.usage.imagesLimit}${c.usage.videosLimit ? ` · 🎬 ${c.usage.videos}/${c.usage.videosLimit}` : ''}</span>` : ''}
         <div class="spacer"></div>
         ${c.phone ? '<button class="btn" onclick="generateNow()">✨ צור תוכן עכשיו</button>' : ''}
         ${c.phone ? '<button class="btn danger" onclick="removeClient()">מחיקה</button>' : ''}
@@ -269,8 +270,9 @@
           </div>
           <div class="field"><label>סטטוס</label>
             <select id="f_status">
-              <option value="active" ${c.status !== 'paused' ? 'selected' : ''}>פעיל</option>
-              <option value="paused" ${c.status === 'paused' ? 'selected' : ''}>מושהה</option>
+              <option value="active" ${!['suspended', 'canceled'].includes(c.status) ? 'selected' : ''}>פעיל</option>
+              <option value="suspended" ${c.status === 'suspended' ? 'selected' : ''}>מושהה (הודעה חד פעמית ללקוח)</option>
+              <option value="canceled" ${c.status === 'canceled' ? 'selected' : ''}>מבוטל (החשבון נסגר לצמיתות)</option>
             </select>
           </div>
         </div>

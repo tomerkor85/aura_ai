@@ -31,6 +31,8 @@ async function call(body) {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify(body),
+    // Image generation can legitimately take a minute or two.
+    signal: AbortSignal.timeout(180_000),
   });
   if (!res.ok) throw new Error(`OpenAI Responses failed: ${res.status} ${await res.text()}`);
   const data = await res.json();

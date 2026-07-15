@@ -7,17 +7,16 @@ export const config = {
     token: process.env.GREEN_API_TOKEN || '',
   },
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
-  claudeModel: 'claude-opus-4-8',
+  claudeModel: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
 
+  // BytePlus powers video only (Seedance); images moved to the OpenAI Responses API.
   byteplus: {
     apiKey: process.env.BYTEPLUS_API_KEY || '',
     baseUrl: (process.env.BYTEPLUS_BASE_URL || 'https://ark.ap-southeast.bytepluses.com/api/v3').replace(/\/$/, ''),
-    seedreamModel: process.env.SEEDREAM_MODEL || 'seedream-3-0-t2i-250415',
     seedanceModel: process.env.SEEDANCE_MODEL || 'seedance-1-0-lite-t2v-250428',
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
-    imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1',
     // Model for the Responses API (conversational, editable images). Confirm the
     // exact model name in your OpenAI account.
     responsesModel: process.env.OPENAI_RESPONSES_MODEL || 'gpt-5.6',
@@ -27,13 +26,11 @@ export const config = {
     // function tools in Chat Completions. Set '' to omit for non-reasoning models.
     reasoningEffort: process.env.OPENAI_REASONING_EFFORT ?? 'none',
   },
-  imageProvider: (process.env.IMAGE_PROVIDER || 'byteplus').toLowerCase(),
 
   // Which provider powers the text/chat engine: 'openai' or 'anthropic'.
   // Switch by setting TEXT_PROVIDER and restarting.
   textProvider: (process.env.TEXT_PROVIDER || 'openai').toLowerCase(),
 
-  dailyImages: (process.env.DAILY_IMAGES || 'false').toLowerCase() === 'true',
   tz: process.env.TZ_NAME || 'Asia/Jerusalem',
 
   // Max edits per single generated image / video before the client must create a new one.
@@ -51,6 +48,9 @@ export const config = {
   forceSecureCookie: (process.env.FORCE_SECURE_COOKIE || 'false').toLowerCase() === 'true',
 
   dataDir: process.env.DATA_DIR || '',
+
+  // Contact address shown to clients whose subscription is suspended/canceled.
+  supportEmail: process.env.SUPPORT_EMAIL || '',
 };
 
 function randomHex() {
