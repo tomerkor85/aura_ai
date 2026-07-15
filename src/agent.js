@@ -8,10 +8,11 @@ import { generateVideo } from './visual.js';
 import { createImage, editImage } from './openai_images.js';
 import { sendText, sendVisual, sendFileByUrl } from './greenapi.js';
 import { runConversation, structuredContent } from './llm/index.js';
+import { logger } from './logger.js';
 
 // Provider-neutral tool definitions (`parameters` = JSON schema). Each adapter
-// converts these to its own tool format.
-const TOOLS = [
+// converts these to its own tool format. Exported for test harnesses.
+export const TOOLS = [
   {
     name: 'generate_image',
     description:
@@ -144,6 +145,8 @@ function makeExecuteTool(client, sent = {}) {
 
       return `Unknown tool: ${name}`;
     } catch (err) {
+      // Log server-side too — the return value only reaches the LLM.
+      logger.error('tool', `${name} failed for ${client.phone}`, err);
       return `${name} failed: ${err.message}`;
     }
   };

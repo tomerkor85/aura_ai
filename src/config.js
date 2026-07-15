@@ -17,11 +17,16 @@ export const config = {
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
-    // Model for the Responses API (conversational, editable images). Confirm the
-    // exact model name in your OpenAI account.
-    responsesModel: process.env.OPENAI_RESPONSES_MODEL || 'gpt-5.6',
-    // Model for the chat/text engine (copy, hooks, tool calling). Confirm in your account.
-    textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5.6',
+    // Model for the Responses API (conversational, editable images).
+    responsesModel: process.env.OPENAI_RESPONSES_MODEL || 'gpt-5.6-terra',
+    // Model tiers (use EXPLICIT ids from /v1/models — bare aliases like 'gpt-5.6'
+    // are unlisted and showed flaky routing/401s):
+    //   textModel    — main content: chat, posts, hooks (quality tier)
+    //   bulkModel    — bulk variations: content packs, captions, CTAs (cheap tier)
+    //   premiumModel — fallback when the main model fails (top tier)
+    textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5.6-terra',
+    bulkModel: process.env.OPENAI_BULK_MODEL || 'gpt-5.6-luna',
+    premiumModel: process.env.OPENAI_PREMIUM_MODEL || 'gpt-5.6-sol',
     // Reasoning models (e.g. gpt-5.x) require reasoning_effort:'none' when using
     // function tools in Chat Completions. Set '' to omit for non-reasoning models.
     reasoningEffort: process.env.OPENAI_REASONING_EFFORT ?? 'none',

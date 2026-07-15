@@ -1,18 +1,20 @@
 import { config, validateConfig } from './config.js';
-import { getClientByPhone, markStatusNotified } from './db.js';
+import { getClientByPhone } from './db.js';
 import { receiveNotification, deleteNotification, parseIncoming, sendText, readChat } from './greenapi.js';
 import { handleChatMessage } from './agent.js';
 import { startAdmin } from './admin.js';
+import { sendStatusNoticeOnce, enforceExpiry, sweepExpiredSubscriptions } from './subscription.js';
+import { logger, snip } from './logger.js';
 
 const missing = validateConfig();
 if (missing.length) {
-  console.error(`Missing environment variables: ${missing.join(', ')}`);
-  console.error('Copy .env.example to .env and fill in the keys.');
+  logger.error('boot', `Missing environment variables: ${missing.join(', ')}`);
+  logger.error('boot', 'Copy .env.example to .env and fill in the keys.');
   process.exit(1);
 }
 
-console.log('AURA is starting...');
-console.log(`Model: ${config.claudeModel} | conversational mode (no scheduled sends)`);
+logger.info('boot', 'AURA is starting...');
+logger.info('boot', `text=${config.textProvider} (${config.openai.textModel} / bulk ${config.openai.bulkModel} / fallback ${config.openai.premiumModel}) | images=${config.openai.responsesModel} | conversational mode`);
 
 // Start the admin panel (client management UI) alongside the agent.
 startAdmin();
@@ -26,7 +28,7 @@ const queues = new Map(); // phone -> tail promise of that client's chain
 
 function enqueueForPhone(phone, job) {
   const tail = (queues.get(phone) || Promise.resolve()).then(job).catch((err) => {
-    console.error(`[queue] job failed for ${phone}:`, err.message);
+    logger.error('queue', `job failed for ${phone}`, err);
   });
   queues.set(phone, tail);
   tail.finally(() => {
@@ -55,7 +57,7 @@ async function pollLoop() {
       if (!notification) continue; // long-poll returned empty; loop again
 
       const { receiptId, body } = notification;
-      console.log(`[poll] notification: ${body?.typeWebhook || 'unknown'}`);
+      logger.debug('poll', `notification: ${body?.typeWebhook || 'unknown'}`);
       try {
         const incoming = parseIncoming(body);
         if (incoming) {
@@ -66,19 +68,21 @@ async function pollLoop() {
         await deleteNotification(receiptId);
       }
     } catch (err) {
-      console.error('[poll] error:', err.message);
+      logger.error('poll', 'poll loop error', err);
       await new Promise((r) => setTimeout(r, 5000));
     }
   }
 }
 
 async function handleIncoming({ phone, text, nonText }) {
-  console.log(`[in] ${phone}: ${nonText ? '[media message]' : text.slice(0, 80)}`);
+  logger.info('in', `${phone}: ${nonText ? '[media message]' : snip(text, 120)}`);
   const client = getClientByPhone(phone);
   if (!client) {
-    console.log(`[in] Unknown number ${phone} - ignoring`);
+    logger.info('in', `unknown number ${phone} - ignoring`);
     return;
   }
+  // Automatic expiry: subscription end passed -> suspend now and tell them once.
+  if (await enforceExpiry(client)) return;
   if (client.status !== 'active') {
     await sendStatusNoticeOnce(client);
     return;
@@ -86,7 +90,7 @@ async function handleIncoming({ phone, text, nonText }) {
 
   const rate = rateLimitState(phone);
   if (rate !== 'ok') {
-    console.warn(`[rate] ${phone} exceeded ${RATE_LIMIT.max} msgs/min (${rate})`);
+    logger.warn('rate', `${phone} exceeded ${RATE_LIMIT.max} msgs/min (${rate})`);
     if (rate === 'notify') {
       await sendText(phone, 'וואו, הרבה הודעות ברצף 🙂 תנו לי דקה להתאפס ונמשיך').catch(() => {});
     }
@@ -104,53 +108,39 @@ async function handleIncoming({ phone, text, nonText }) {
   }
 
   try {
-    console.log(`[agent] generating reply for ${phone} (provider: ${config.textProvider})...`);
+    logger.info('agent', `generating reply for ${phone} (provider: ${config.textProvider})`);
     const reply = await handleChatMessage(client, text);
     if (reply) {
       await sendText(phone, reply);
-      console.log(`[out] ${phone}: ${reply.slice(0, 80)}`);
+      logger.info('out', `${phone}: ${snip(reply, 120)}`);
     } else {
-      console.log(`[agent] no text reply (media may have been sent via a tool).`);
+      logger.info('agent', `no text reply for ${phone} (media may have been sent via a tool)`);
     }
   } catch (err) {
-    console.error(`[agent] error for ${phone}:`, err.stack || err.message);
+    logger.error('agent', `error for ${phone}`, err);
     await sendText(phone, 'אופס, נתקלתי בתקלה רגעית. נסו לשלוח שוב בעוד רגע 🙏');
   }
 }
 
-// One-time notice for suspended/canceled subscriptions: sent on the first message
-// after the status change, then silence until the status changes again.
-async function sendStatusNoticeOnce(client) {
-  if (client.notified_status === client.status) return; // already told them
-  const contact = config.supportEmail
-    ? `במייל: ${config.supportEmail}`
-    : 'במייל של מנהלת השירות';
-
-  let notice;
-  if (client.status === 'suspended') {
-    notice = `היי ${client.name}, המנוי שלך מושהה כרגע, כנראה בגלל רכישה או חידוש שלא הושלמו. כדי להפעיל את השירות מחדש צרו איתנו קשר ${contact}`;
-  } else if (client.status === 'canceled') {
-    notice = `היי ${client.name}, החשבון הזה נסגר לצמיתות. ליצירת חשבון חדש פנו אלינו ${contact}`;
-  } else {
-    return; // unknown non-active status — stay silent
-  }
-
-  try {
-    await sendText(client.phone, notice);
-    markStatusNotified(client.phone, client.status);
-    console.log(`[status] one-time ${client.status} notice sent to ${client.phone}`);
-  } catch (err) {
-    // Don't mark as notified if the send failed — retry on their next message.
-    console.error(`[status] notice failed for ${client.phone}:`, err.message);
-  }
-}
-
 // AURA is conversational: it responds when a client messages, and content can be
-// generated on demand from the admin panel ("Generate now"). No scheduled sends.
+// generated on demand from the admin panel ("Generate now"). No scheduled sends
+// of content — the expiry sweep below is subscription maintenance only:
+// every minute, suspend clients whose subscription ended and notify them once.
+const EXPIRY_SWEEP_MS = 60_000;
 pollLoop();
+sweepExpiredSubscriptions();
+setInterval(sweepExpiredSubscriptions, EXPIRY_SWEEP_MS);
 
 process.on('SIGINT', () => {
   polling = false;
-  console.log('\nAURA stopped.');
+  logger.info('boot', 'AURA stopped.');
   process.exit(0);
+});
+
+// Last-resort safety net: log crashes with full stack instead of dying silently.
+process.on('uncaughtException', (err) => {
+  logger.error('fatal', 'uncaughtException', err);
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error('fatal', 'unhandledRejection', reason instanceof Error ? reason : String(reason));
 });

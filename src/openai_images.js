@@ -1,4 +1,8 @@
 import { config } from './config.js';
+import { postJsonWithRetry } from './http.js';
+import { logger, snip } from './logger.js';
+
+const log = logger.child('images');
 
 // ============================================================================
 // Conversational, editable images via the OpenAI Responses API.
@@ -26,21 +30,23 @@ function extractImage(data) {
   return call.result; // base64 PNG
 }
 
-async function call(body) {
-  const res = await fetch(RESPONSES_URL, {
-    method: 'POST',
+async function call(kind, body) {
+  const t0 = Date.now();
+  log.info(`${kind} start model=${body.model}`, snip(body.input, 200));
+  const data = await postJsonWithRetry(RESPONSES_URL, {
     headers: headers(),
-    body: JSON.stringify(body),
+    body,
     // Image generation can legitimately take a minute or two.
-    signal: AbortSignal.timeout(180_000),
+    timeoutMs: 180_000,
+    label: 'OpenAI Responses',
   });
-  if (!res.ok) throw new Error(`OpenAI Responses failed: ${res.status} ${await res.text()}`);
-  const data = await res.json();
-  return { b64: extractImage(data), responseId: data.id };
+  const result = { b64: extractImage(data), responseId: data.id };
+  log.info(`${kind} done in ${Math.round((Date.now() - t0) / 1000)}s`, { responseId: data.id, bytes: result.b64.length });
+  return result;
 }
 
 export async function createImage(prompt) {
-  return call({
+  return call('create', {
     model: config.openai.responsesModel,
     input: prompt,
     tools: [{ type: 'image_generation' }],
@@ -49,7 +55,7 @@ export async function createImage(prompt) {
 }
 
 export async function editImage(previousResponseId, editPrompt) {
-  return call({
+  return call('edit', {
     model: config.openai.responsesModel,
     previous_response_id: previousResponseId,
     input: editPrompt,

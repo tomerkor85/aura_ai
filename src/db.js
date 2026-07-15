@@ -70,6 +70,11 @@ db.prepare("UPDATE clients SET status = 'suspended' WHERE status = 'paused'").ru
 db.exec('DROP TABLE IF EXISTS daily_log');
 try { db.exec('ALTER TABLE clients DROP COLUMN send_hour'); } catch { /* already dropped */ }
 
+// Payment tracking: when the client paid, and when the subscription ends
+// (ISO datetimes; end defaults to exactly one month after payment).
+try { db.exec('ALTER TABLE clients ADD COLUMN paid_at TEXT'); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE clients ADD COLUMN subscription_ends_at TEXT'); } catch { /* already exists */ }
+
 export function getImageState(phone) {
   return db.prepare('SELECT * FROM image_state WHERE phone = ?').get(phone) || null;
 }
@@ -124,13 +129,14 @@ export function deleteClient(phone) {
   db.prepare('DELETE FROM usage WHERE phone = ?').run(phone);
 }
 
-export function upsertClient({ phone, name, business_name, package: pkg, status, profile }) {
+export function upsertClient({ phone, name, business_name, package: pkg, status, profile, paid_at, subscription_ends_at }) {
   db.prepare(`
-    INSERT INTO clients (phone, name, business_name, package, status, profile)
-    VALUES (@phone, @name, @business_name, @pkg, @status, @profile)
+    INSERT INTO clients (phone, name, business_name, package, status, profile, paid_at, subscription_ends_at)
+    VALUES (@phone, @name, @business_name, @pkg, @status, @profile, @paid_at, @ends_at)
     ON CONFLICT(phone) DO UPDATE SET
       name = @name, business_name = @business_name, package = @pkg,
       status = @status, profile = @profile,
+      paid_at = @paid_at, subscription_ends_at = @ends_at,
       -- On a status change, clear the "already notified" marker so the client
       -- gets the one-time notice for the NEW status (e.g. suspended -> canceled,
       -- or a second suspension after reactivation).
@@ -139,12 +145,45 @@ export function upsertClient({ phone, name, business_name, package: pkg, status,
     phone, name, business_name, pkg,
     status: status || 'active',
     profile: JSON.stringify(profile),
+    paid_at: paid_at || null,
+    ends_at: subscription_ends_at || null,
   });
 }
 
 // Mark that the one-time notice for this non-active status was sent.
 export function markStatusNotified(phone, status) {
   db.prepare('UPDATE clients SET notified_status = ? WHERE phone = ?').run(status, phone);
+}
+
+// Active clients whose subscription end has already passed (for the periodic
+// expiry sweep). ISO-8601 UTC strings compare correctly as plain text.
+export function listExpiredActiveClients() {
+  return db
+    .prepare("SELECT * FROM clients WHERE status = 'active' AND subscription_ends_at IS NOT NULL AND subscription_ends_at < ?")
+    .all(new Date().toISOString())
+    .map((r) => ({ ...r, profile: JSON.parse(r.profile) }));
+}
+
+// Expired clients that were already suspended but whose one-time notice never
+// went out (e.g. the send failed) — the sweep retries these.
+export function listExpiredPendingNotice() {
+  return db
+    .prepare("SELECT * FROM clients WHERE status = 'suspended' AND notified_status IS NULL AND subscription_ends_at IS NOT NULL AND subscription_ends_at < ?")
+    .all(new Date().toISOString())
+    .map((r) => ({ ...r, profile: JSON.parse(r.profile) }));
+}
+
+// Automatic expiry: an active client whose subscription end has passed becomes
+// suspended. Mutates the passed client object too, and returns true when it fired.
+// (notified_status is left as-is: it was cleared when the client last became
+// active, so the one-time suspension notice will go out.)
+export function expireSubscriptionIfDue(client) {
+  if (!client || client.status !== 'active' || !client.subscription_ends_at) return false;
+  const ends = new Date(client.subscription_ends_at).getTime();
+  if (Number.isNaN(ends) || ends >= Date.now()) return false;
+  db.prepare("UPDATE clients SET status = 'suspended' WHERE phone = ?").run(client.phone);
+  client.status = 'suspended';
+  return true;
 }
 
 const HISTORY_KEEP = 200; // per client; only the last ~30 are sent to the LLM anyway

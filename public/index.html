@@ -242,6 +242,58 @@
     const P = (v) => (v == null ? '' : v);
     function arr(v) { return Array.isArray(v) ? v.join('\n') : P(v); }
 
+    // ISO datetime (UTC) -> value for <input type="datetime-local"> in local time.
+    function toLocalInput(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    // When the payment date changes — fill the end date exactly one month
+    // forward (month-end payments clamp to the last day of the next month).
+    // Recomputes also when the existing end date no longer makes sense
+    // (empty, or not after the new payment date); a deliberate future end is kept.
+    function autoFillSubEnd() {
+      const paid = $('f_paid_at').value;
+      if (!paid) return;
+      const paidDate = new Date(paid);
+      if (Number.isNaN(paidDate.getTime())) return;
+      if (paidDate.getTime() > Date.now() + 5 * 60 * 1000) {
+        toast('מועד התשלום לא יכול להיות בעתיד');
+        return;
+      }
+      const existingEnd = $('f_sub_end').value ? new Date($('f_sub_end').value) : null;
+      if (existingEnd && existingEnd > paidDate) return; // deliberate end — keep it
+      const d = new Date(paid);
+      const day = d.getDate();
+      d.setMonth(d.getMonth() + 1);
+      if (d.getDate() !== day) d.setDate(0);
+      $('f_sub_end').value = toLocalInput(d.toISOString());
+    }
+
+    // Human duration: minutes under an hour, hours under a day, then days.
+    function fmtDuration(ms) {
+      const mins = Math.max(1, Math.round(ms / 60000));
+      if (mins < 60) return mins === 1 ? 'דקה' : `${mins} דקות`;
+      const hours = Math.round(mins / 60);
+      if (hours < 24) return hours === 1 ? 'שעה' : `${hours} שעות`;
+      const days = Math.round(hours / 24);
+      return days === 1 ? 'יום' : `${days} ימים`;
+    }
+
+    // Human summary line: time left / expired.
+    function subSummary(c) {
+      if (!c.subscription_ends_at) return '';
+      const end = new Date(c.subscription_ends_at);
+      if (Number.isNaN(end.getTime())) return '';
+      const diff = end - Date.now();
+      const when = end.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
+      if (diff < 0) return `<div class="hint" style="color:#e5484d">⚠️ המנוי פג ב־${when} (לפני ${fmtDuration(-diff)}) — הלקוח מושהה אוטומטית; רישום תשלום חדש יחזיר אותו לפעיל</div>`;
+      return `<div class="hint">בתוקף עד ${when} — עוד ${fmtDuration(diff)}. בסיום התוקף הלקוח יושהה אוטומטית ויקבל הודעה חד פעמית</div>`;
+    }
+
     function editorTemplate(c) {
       const pr = c.profile || {};
       const bi = pr.brand_identity || {};
@@ -276,6 +328,21 @@
             </select>
           </div>
         </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>תשלום ומנוי</legend>
+        <div class="row">
+          <div class="field">
+            <label>מועד תשלום אחרון</label>
+            <input type="datetime-local" id="f_paid_at" value="${toLocalInput(c.paid_at)}" onchange="autoFillSubEnd()">
+          </div>
+          <div class="field">
+            <label>המנוי מסתיים ב־ <span class="hint">(ברירת מחדל: חודש מהתשלום)</span></label>
+            <input type="datetime-local" id="f_sub_end" value="${toLocalInput(c.subscription_ends_at)}">
+          </div>
+        </div>
+        ${subSummary(c)}
       </fieldset>
 
       <fieldset>
@@ -319,6 +386,13 @@
 
     const lines = (id) => $(id).value.split('\n').map((s) => s.trim()).filter(Boolean);
     const val = (id) => $(id).value.trim();
+    // datetime-local value -> ISO string, or null when empty/unparseable.
+    function isoOrNull(id) {
+      const v = val(id);
+      if (!v) return null;
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
 
     async function saveClient() {
       const body = {
@@ -327,6 +401,8 @@
         business_name: val('f_business'),
         package: val('f_package'),
         status: val('f_status'),
+        paid_at: isoOrNull('f_paid_at'),
+        subscription_ends_at: isoOrNull('f_sub_end'),
         profile: {
           about: val('p_about'),
           audience: val('p_audience'),
@@ -346,11 +422,20 @@
       if (!body.phone || !body.name || !body.business_name) {
         return toast('חובה למלא שם, שם עסק וטלפון');
       }
+      if (body.paid_at && new Date(body.paid_at).getTime() > Date.now() + 5 * 60 * 1000) {
+        return toast('מועד התשלום לא יכול להיות בעתיד');
+      }
+      if (body.paid_at && body.subscription_ends_at && body.subscription_ends_at <= body.paid_at) {
+        return toast('תאריך סיום המנוי חייב להיות אחרי מועד התשלום');
+      }
+      if (!body.paid_at && body.subscription_ends_at) {
+        return toast('נקבע תאריך סיום מנוי בלי מועד תשלום — מלאי קודם את מועד התשלום');
+      }
       try {
         const saved = await api('POST', '/clients', body);
         current = saved.phone;
         await loadClients();
-        toast('נשמר בהצלחה');
+        toast(saved.reactivated ? 'נשמר — תשלום חדש נרשם והלקוח חזר לפעיל ✅' : 'נשמר בהצלחה');
       } catch (e) { toast('שגיאה: ' + e.message); }
     }
 

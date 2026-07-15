@@ -73,7 +73,9 @@ npm run hash-password -- "סיסמה"    # יוצר ADMIN_PASSWORD_HASH לפרו
 |---|---|
 | `GREEN_API_ID_INSTANCE` + `GREEN_API_TOKEN` | Green API — Instance מחובר למספר ווטסאפ |
 | `ANTHROPIC_API_KEY` + `CLAUDE_MODEL` | מנוע הטקסט (Claude, אם `TEXT_PROVIDER=anthropic`) |
-| `OPENAI_API_KEY` + `OPENAI_RESPONSES_MODEL` + `OPENAI_TEXT_MODEL` | תמונות (Responses API) + מנוע טקסט |
+| `OPENAI_API_KEY` + `OPENAI_TEXT_MODEL` / `OPENAI_BULK_MODEL` / `OPENAI_PREMIUM_MODEL` | מדרג מודלים: Terra לתוכן ראשי, Luna לחבילות/וריאציות, Sol כ-fallback אוטומטי |
+| `OPENAI_RESPONSES_MODEL` | תמונות (Responses API) |
+| `LOG_LEVEL` + `LOG_KEEP_DAYS` | לוגים מלאים לקונסול + קובץ יומי ב-`<DATA_DIR>/logs/` (ברירת מחדל info, נשמר 14 יום) |
 | `BYTEPLUS_API_KEY` + `SEEDANCE_MODEL` | וידאו (Seedance) |
 | `SUPPORT_EMAIL` | מייל ליצירת קשר בהודעות השהיה/ביטול מנוי |
 | `ADMIN_PASSWORD_HASH` + `SESSION_SECRET` | אבטחת פאנל הניהול |
