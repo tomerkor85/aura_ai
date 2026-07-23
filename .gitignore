@@ -2,4 +2,7 @@ node_modules/
 .env
 aura.db
 aura.db-journal
+aura.db-wal
+aura.db-shm
+backups/
 *.log

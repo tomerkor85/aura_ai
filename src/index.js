@@ -4,6 +4,7 @@ import { receiveNotification, deleteNotification, parseIncoming, sendText, readC
 import { handleChatMessage } from './agent.js';
 import { startAdmin } from './admin.js';
 import { sendStatusNoticeOnce, enforceExpiry, sweepExpiredSubscriptions } from './subscription.js';
+import { scheduleBackups } from './backup.js';
 import { logger, snip } from './logger.js';
 
 const missing = validateConfig();
@@ -130,6 +131,10 @@ const EXPIRY_SWEEP_MS = 60_000;
 pollLoop();
 sweepExpiredSubscriptions();
 setInterval(sweepExpiredSubscriptions, EXPIRY_SWEEP_MS);
+
+// Automatic customer-DB backups: a fresh snapshot ~30s after boot, then daily,
+// written to <DATA_DIR>/backups on the persistent Volume (see src/backup.js).
+scheduleBackups();
 
 process.on('SIGINT', () => {
   polling = false;
