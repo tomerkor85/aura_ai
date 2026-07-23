@@ -5,6 +5,7 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
+    "prestart": "node scripts/reset-on-deploy.js",
     "start": "node src/index.js",
     "admin": "node src/admin.js",
     "hash-password": "node scripts/hash-password.js",
