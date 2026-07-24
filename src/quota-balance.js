@@ -81,6 +81,15 @@ export function clientQuotaSummary(db, client, now = new Date()) {
   return Q.quotaSummary(client, todayStr, delivered, adjustments);
 }
 
+// Admin guard: what `remaining` would become after applying `delta` to a type.
+// Used to REJECT adjustments that would drive the balance below zero (e.g. the
+// client has 2 left and an admin tries −7). ok=false means "don't apply".
+export function adjustmentResult(db, client, type, delta, now = new Date()) {
+  const remaining = clientQuotaSummary(db, client, now)[type].remaining;
+  const resulting = remaining + delta;
+  return { remaining, resulting, ok: resulting >= 0 };
+}
+
 // Command handler (runs before the regular AI chat). Returns the balance message
 // for a RESOLVED customer when `text` is the balance command, else null (caller
 // then proceeds to the normal AI flow). Never sends; never mutates anything.

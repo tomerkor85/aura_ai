@@ -5,7 +5,7 @@ import { config, packageOf } from './config.js';
 import { db, listAllClients, getClientByPhone, upsertClient, deleteClient, getUsage } from './db.js';
 import * as Q from './quota.js';
 import * as D from './deliveries.js';
-import { clientQuotaSummary } from './quota-balance.js';
+import { clientQuotaSummary, adjustmentResult } from './quota-balance.js';
 import { enforceExpiry } from './subscription.js';
 import { runDailyTick } from './daily.js';
 import {
@@ -126,6 +126,13 @@ export function createAdminApp(controls = {}) {
       return res.status(400).json({ error: 'delta חייב להיות מספר שלם שונה מאפס' });
     }
     const now = new Date();
+    // Guard: a (negative) adjustment must never push the remaining balance below
+    // zero. e.g. client has 2 left, admin tries −7 -> rejected, nothing recorded.
+    const check = adjustmentResult(db, c, type, delta, now);
+    if (!check.ok) {
+      const label = { story: 'סטוריז', carousel: 'קרוסלות', reel: 'רילז' }[type];
+      return res.status(400).json({ error: `לא ניתן להפחית ${-delta} ${label} — נותרו רק ${check.remaining}` });
+    }
     const ci = Q.cycleInfo(c, Q.localDateStr(now, Q.clientTz(c)));
     const cycleStart = type === 'reel' ? ci.c14Start : ci.weeklyStart;
     D.addAdjustment(db, {

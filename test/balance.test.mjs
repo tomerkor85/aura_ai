@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as D from '../src/deliveries.js';
-import { isBalanceCommand, buildQuotaBalanceMessage, clientQuotaSummary, balanceReplyFor } from '../src/quota-balance.js';
+import { isBalanceCommand, buildQuotaBalanceMessage, clientQuotaSummary, balanceReplyFor, adjustmentResult } from '../src/quota-balance.js';
 import { makeDb, addClient, getClient } from './helpers.mjs';
 
 // Registered local 2026-07-24 (08:00 Asia/Jerusalem); "now" the same morning.
@@ -52,6 +52,35 @@ test('Premium customer balance (חבילת פרימיום, doubled quotas)', () 
   assert.match(msg, /28 סטוריז נותרו/);
   assert.match(msg, /2 קרוסלות נותרו/);
   assert.match(msg, /2 רילז נותרו/);
+});
+
+test('Admin adjustment cannot push the remaining balance below zero', () => {
+  const db = makeDb();
+  const c = addClient(db, { phone: '1', package: 'basic', registration_date: REG });
+  deliver(db, '1', 'story', 12); // basic story included 14 -> remaining 2
+  assert.equal(clientQuotaSummary(db, c, NOW).story.remaining, 2);
+
+  // −7 would make it −5 -> rejected
+  const bad = adjustmentResult(db, c, 'story', -7, NOW);
+  assert.equal(bad.ok, false);
+  assert.deepEqual([bad.remaining, bad.resulting], [2, -5]);
+
+  // −2 (lands on 0), −1, and +5 are all allowed
+  assert.equal(adjustmentResult(db, c, 'story', -2, NOW).ok, true);
+  assert.equal(adjustmentResult(db, c, 'story', -1, NOW).ok, true);
+  assert.equal(adjustmentResult(db, c, 'story', 5, NOW).ok, true);
+
+  // Guarded flow (as the admin endpoint runs it): a rejected adjustment records
+  // NOTHING and leaves the balance intact; an allowed one applies.
+  const apply = (delta) => {
+    const r = adjustmentResult(db, c, 'story', delta, NOW);
+    if (r.ok) D.addAdjustment(db, { phone: '1', content_type: 'story', cycle_start: CYCLE, delta });
+    return r.ok;
+  };
+  assert.equal(apply(-7), false);
+  assert.equal(clientQuotaSummary(db, c, NOW).story.remaining, 2, 'rejected adjustment did not change the balance');
+  assert.equal(apply(-2), true);
+  assert.equal(clientQuotaSummary(db, c, NOW).story.remaining, 0, 'balance can reach 0 but never goes negative');
 });
 
 test('Admin adjustments are reflected in the balance', () => {
