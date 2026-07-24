@@ -129,6 +129,58 @@ export function buildDailyPrompt(client, { stories, carousel }) {
   return parts.join('\n');
 }
 
+// --- Scheduled carousel (one quota unit = 3-4 slide images + a post caption) ---
+export function buildCarouselPrompt(client) {
+  return [
+    `צור קרוסלה אחת לאינסטגרם עבור "${client.business_name}" להיום.`,
+    '3 עד 4 שקפים. השקף הראשון הוק חזק, השקף האחרון CTA אחד בלבד.',
+    'לכל שקף: טקסט עברי קצר שמוטבע בתוך התמונה, ופרומפט תמונה באנגלית שמרנדר את הטקסט העברי המדויק כחלק מהעיצוב, עם הצבעים השולטים והסגנון של המותג.',
+    'בנוסף טקסט פוסט אחד בעברית שמתאר את הקרוסלה ומה יש בה (ישמש ככיתוב הפוסט).',
+    'גוון: אל תחזור על הוקים או זוויות מהימים האחרונים.',
+  ].join('\n');
+}
+
+export const CAROUSEL_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    post_text: { type: 'string', description: 'Hebrew post caption describing the carousel' },
+    slides: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'Hebrew text embedded in the slide' },
+          image_prompt: { type: 'string', description: 'English image prompt that renders the exact Hebrew text inside, matching brand colors/style' },
+        },
+        required: ['text', 'image_prompt'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['title', 'post_text', 'slides'],
+  additionalProperties: false,
+};
+
+// --- Scheduled reel (one quota unit = one short branded Seedance video) ---
+export function buildReelPrompt(client) {
+  return [
+    `צור ריל (סרטון קצר) ממותג עבור "${client.business_name}" להיום.`,
+    'החזר פרומפט וידאו באנגלית שמשקף את הצבעים השולטים, הסגנון והמוד של המותג, עם תנועה ברורה ומסר שיווקי אחד.',
+    'בנוסף כיתוב עברי קצר לשליחה עם הסרטון.',
+  ].join('\n');
+}
+
+export const REEL_SCHEMA = {
+  type: 'object',
+  properties: {
+    video_prompt: { type: 'string', description: 'English video-generation prompt: scene, motion, brand colors, style, mood' },
+    caption: { type: 'string', description: 'Short Hebrew caption to send with the reel' },
+  },
+  required: ['video_prompt', 'caption'],
+  additionalProperties: false,
+};
+
 export const DAILY_OUTPUT_SCHEMA = {
   type: 'object',
   properties: {

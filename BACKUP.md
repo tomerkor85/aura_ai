@@ -10,7 +10,10 @@ accidental deletion or corruption.
   every 24 hours (`src/backup.js`, wired up in `src/index.js`).
 - **On-demand:** run `npm run backup` (locally, or in the Railway **Console**).
 - **Method:** SQLite `VACUUM INTO` — a consistent, self-contained snapshot taken
-  safely while the database is live (never a raw file copy of an active DB).
+  safely while the database is live (never a raw file copy of an active DB). Each
+  snapshot is then **validated**: it's re-opened and run through
+  `PRAGMA integrity_check`, and a snapshot that isn't `ok` is rejected (throws)
+  rather than being treated as a good backup.
 - **Location:** `/data/backups/` — on the persistent Volume, **outside** the
   ephemeral `/app` container filesystem, so backups survive deploys/restarts.
 - **Naming:** `aura-<UTC-timestamp>.db`, e.g. `aura-2026-07-23_19-28-41-000.db`.
@@ -31,6 +34,19 @@ In the Railway **Console** (service `aura_ai`):
 ```bash
 ls -la /data/backups
 ```
+
+## Before a migration or risky deploy (recommended)
+
+The scheduled-content migration is additive and idempotent (only `CREATE TABLE IF
+NOT EXISTS` and guarded `ALTER ... ADD COLUMN` — see `src/schema.js`), but take a
+verified snapshot first anyway. In the Railway **Console**:
+
+```bash
+cd /app && npm run backup      # writes + integrity-checks /data/backups/aura-<ts>.db
+ls -la /data/backups           # confirm the new dated file is present
+```
+
+Only deploy once that command prints a `wrote + verified` line.
 
 ## Restore a backup
 

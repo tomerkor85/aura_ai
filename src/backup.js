@@ -11,6 +11,7 @@
 //   deleted.
 //
 // Restore steps are documented in BACKUP.md.
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,8 +33,18 @@ export function runBackup() {
   const target = path.join(backupDir, `aura-${ts}.db`);
   // VACUUM INTO refuses to overwrite an existing file; unique timestamps prevent collisions.
   db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+
+  // Validate: open the snapshot and run PRAGMA integrity_check before trusting it.
+  // A corrupt snapshot must never be treated as a good backup.
+  const check = new Database(target, { readonly: true });
+  let result = 'unknown';
+  try { result = check.pragma('integrity_check', { simple: true }); } finally { check.close(); }
+  if (result !== 'ok') {
+    throw new Error(`backup integrity_check failed for ${target}: ${result}`);
+  }
+
   pruneOldBackups();
-  logger.info('backup', `wrote ${target}`);
+  logger.info('backup', `wrote + verified ${target}`);
   return target;
 }
 

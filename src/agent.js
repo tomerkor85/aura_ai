@@ -1,5 +1,8 @@
 import { config, packageOf } from './config.js';
-import { buildSystemPrompt, buildDailyPrompt, DAILY_OUTPUT_SCHEMA } from './prompts.js';
+import {
+  buildSystemPrompt, buildDailyPrompt, DAILY_OUTPUT_SCHEMA,
+  buildCarouselPrompt, CAROUSEL_SCHEMA, buildReelPrompt, REEL_SCHEMA,
+} from './prompts.js';
 import {
   appendHistory, getRecentHistory, getImageState, startImageState, recordImageEdit,
   getUsage, incrementUsage,
@@ -181,4 +184,44 @@ export async function generateDailyContent(client, { stories, carousel }) {
     prompt: buildDailyPrompt(client, { stories, carousel }),
     schema: DAILY_OUTPUT_SCHEMA,
   });
+}
+
+// ---- Scheduled-content generators (used by the delivery queue) --------------
+// Each throws on failure so the queue can retry; nothing is sent here.
+
+// STORY: one branded story image with the Hebrew copy embedded.
+export async function generateScheduledStory(client) {
+  const content = await generateDailyContent(client, { stories: 1, carousel: false });
+  const story = content.stories && content.stories[0];
+  if (!story || !story.image_prompt) throw new Error('story generation returned no image_prompt');
+  const { b64 } = await createImage(story.image_prompt);
+  return { image: { type: 'base64', data: b64 }, caption: '' };
+}
+
+// CAROUSEL PLAN (LLM only, small + fast): slide prompts/text + post caption.
+// Persisted by the queue so a partial delivery resumes at slide level. The whole
+// carousel counts as ONE carousel quota unit regardless of slide count.
+export async function generateCarouselPlan(client) {
+  const plan = await structuredContent({
+    system: buildSystemPrompt(client), prompt: buildCarouselPrompt(client), schema: CAROUSEL_SCHEMA,
+  });
+  const src = Array.isArray(plan.slides) ? plan.slides : [];
+  if (!src.length) throw new Error('carousel generation returned no slides');
+  return { slides: src.map((s) => ({ image_prompt: s.image_prompt, text: s.text })), postText: plan.post_text || '' };
+}
+
+// Render a single branded image from an English prompt (one carousel slide, or reused elsewhere).
+export async function renderBrandImage(imagePrompt) {
+  const { b64 } = await createImage(imagePrompt);
+  return { image: { type: 'base64', data: b64 } };
+}
+
+// REEL: one branded Seedance video + Hebrew caption. Counts as ONE reel unit.
+export async function generateScheduledReel(client) {
+  const plan = await structuredContent({
+    system: buildSystemPrompt(client), prompt: buildReelPrompt(client), schema: REEL_SCHEMA,
+  });
+  if (!plan.video_prompt) throw new Error('reel generation returned no video_prompt');
+  const videoUrl = await generateVideo(plan.video_prompt);
+  return { videoUrl, caption: plan.caption || '' };
 }

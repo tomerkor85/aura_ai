@@ -95,3 +95,56 @@ export const PACKAGES = {
 export function packageOf(client) {
   return PACKAGES[client.package] || PACKAGES.basic;
 }
+
+// ============================================================================
+// Scheduled subscription content — a SEPARATE quota axis from the monthly
+// PACKAGES above (which govern on-demand conversational generation). These
+// drive the daily scheduler: how many stories/carousels/reels each plan gets
+// and on which cycle-days (0-indexed from the client's registration date).
+// Premium = exactly double Basic.
+// ============================================================================
+export const SCHEDULE_QUOTAS = {
+  basic: { storiesPerDay: 2, carouselDays: [0], reelDays: [0] },
+  premium: { storiesPerDay: 4, carouselDays: [0, 3], reelDays: [0, 7] },
+};
+
+export function scheduleQuotaOf(client) {
+  return SCHEDULE_QUOTAS[client.package] || SCHEDULE_QUOTAS.basic;
+}
+
+const intEnv = (name, def) => {
+  const n = parseInt(process.env[name] || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+};
+
+// Scheduler + delivery-queue tuning. All overridable via env for prod control.
+export const scheduleConfig = {
+  // MASTER SWITCH — off by default. The scheduler never enqueues, and the queue
+  // never claims/sends, unless this is explicitly 'true'. Combined at runtime with
+  // the admin pause toggle and the per-client `scheduled_content_enabled` flag.
+  enabled: (process.env.SCHEDULED_CONTENT_ENABLED || 'false').toLowerCase() === 'true',
+  // Provider-specific daily safety caps. When a cap is hit, jobs stay queued
+  // (nothing is deleted and no quota is consumed) and resume the next day.
+  dailyLimits: {
+    story: intEnv('MAX_STORY_PER_DAY', 200),
+    carousel: intEnv('MAX_CAROUSEL_PER_DAY', 50),
+    reel: intEnv('MAX_REEL_PER_DAY', 20),
+    whatsapp: intEnv('MAX_WHATSAPP_PER_DAY', 1000),
+  },
+  defaultSendTime: process.env.DEFAULT_SEND_TIME || '07:30',
+  defaultTz: process.env.TZ_NAME || 'Asia/Jerusalem',
+  // Scheduler tick: at least once per minute (clamped to <= 60s).
+  tickMs: Math.min(60_000, intEnv('SCHEDULER_TICK_MS', 30_000)),
+  // Per-type worker concurrency — video (reel) is slow/expensive, so it's low.
+  concurrency: {
+    story: intEnv('CONCURRENCY_STORY', 3),
+    carousel: intEnv('CONCURRENCY_CAROUSEL', 2),
+    reel: intEnv('CONCURRENCY_REEL', 1),
+    whatsapp: intEnv('CONCURRENCY_WHATSAPP', 2), // global cap on Green API sends
+  },
+  maxRetries: intEnv('JOB_MAX_RETRIES', 4),
+  backoffBaseMs: intEnv('JOB_BACKOFF_BASE_MS', 30_000),
+  backoffCapMs: intEnv('JOB_BACKOFF_CAP_MS', 900_000), // 15 min
+  leaseMs: intEnv('JOB_LEASE_MS', 600_000),            // 10 min stuck-job timeout
+  itemTimeoutMs: intEnv('JOB_ITEM_TIMEOUT_MS', 300_000),
+};

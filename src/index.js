@@ -1,10 +1,17 @@
-import { config, validateConfig } from './config.js';
-import { getClientByPhone } from './db.js';
-import { receiveNotification, deleteNotification, parseIncoming, sendText, readChat } from './greenapi.js';
-import { handleChatMessage } from './agent.js';
+import { config, scheduleConfig, validateConfig } from './config.js';
+import { db, getClientByPhone, listActiveClients } from './db.js';
+import { receiveNotification, deleteNotification, parseIncoming, sendText, sendVisual, sendFileByUrl, readChat } from './greenapi.js';
+import { handleChatMessage, generateScheduledStory, generateCarouselPlan, renderBrandImage, generateScheduledReel } from './agent.js';
 import { startAdmin } from './admin.js';
 import { sendStatusNoticeOnce, enforceExpiry, sweepExpiredSubscriptions } from './subscription.js';
 import { scheduleBackups } from './backup.js';
+import { realClock } from './clock.js';
+import { createSemaphore } from './semaphore.js';
+import { createQueue } from './queue.js';
+import { createProviderLimiter } from './limiter.js';
+import { makeProcessItem } from './content-delivery.js';
+import { createScheduler } from './scheduler.js';
+import { getSetting, setSetting } from './deliveries.js';
 import { logger, snip } from './logger.js';
 
 const missing = validateConfig();
@@ -17,8 +24,51 @@ if (missing.length) {
 logger.info('boot', 'AURA is starting...');
 logger.info('boot', `text=${config.textProvider} (${config.openai.textModel} / bulk ${config.openai.bulkModel} / fallback ${config.openai.premiumModel}) | images=${config.openai.responsesModel} | conversational mode`);
 
+// --- Scheduled subscription content: persistent queue + bounded worker pools ---
+// Built here so the admin panel can expose live queue health + the pause control.
+// The whole feature is OFF unless SCHEDULED_CONTENT_ENABLED=true AND not paused
+// AND the individual client has scheduled_content_enabled=true.
+const limiter = createProviderLimiter({ db, limits: scheduleConfig.dailyLimits, clock: realClock });
+const isSchedulingActive = () => scheduleConfig.enabled && getSetting(db, 'scheduled_paused') !== 'true';
+
+const waGate = createSemaphore(scheduleConfig.concurrency.whatsapp);
+// Every WhatsApp send passes the global semaphore AND the daily send cap.
+const sendGate = (fn) => waGate.run(async () => {
+  if (!limiter.canSend()) { const e = new Error('daily WhatsApp send limit reached'); e.throttled = true; throw e; }
+  const r = await fn();
+  limiter.recordSend();
+  return r;
+});
+
+const processItem = makeProcessItem({
+  getClient: getClientByPhone,
+  generators: { story: generateScheduledStory, carouselPlan: generateCarouselPlan, reel: generateScheduledReel },
+  renderImage: renderBrandImage,
+  senders: { sendText, sendVisual, sendFileByUrl },
+  sendGate,
+  clock: realClock,
+  logger,
+  genTimeoutMs: scheduleConfig.itemTimeoutMs,
+});
+const deliveryQueue = createQueue({ db, config: scheduleConfig, clock: realClock, logger, processItem, isEnabled: isSchedulingActive, limiter });
+const scheduler = createScheduler({
+  db, queue: deliveryQueue, clock: realClock, config: scheduleConfig, logger, listActiveClients, isSchedulingActive,
+});
+
+// Controls surfaced to the admin panel (global pause/resume + queue health).
+const schedulerControls = {
+  globalEnabled: () => scheduleConfig.enabled,
+  isPaused: () => getSetting(db, 'scheduled_paused') === 'true',
+  pause: () => setSetting(db, 'scheduled_paused', 'true'),
+  resume: () => setSetting(db, 'scheduled_paused', 'false'),
+  isActive: isSchedulingActive,
+  active: () => deliveryQueue.active(),
+  concurrency: scheduleConfig.concurrency,
+  limiterSnapshot: () => limiter.snapshot(),
+};
+
 // Start the admin panel (client management UI) alongside the agent.
-startAdmin();
+startAdmin(schedulerControls);
 
 // --- Incoming message loop (Green API polling) ---
 let polling = true;
@@ -135,6 +185,10 @@ setInterval(sweepExpiredSubscriptions, EXPIRY_SWEEP_MS);
 // Automatic customer-DB backups: a fresh snapshot ~30s after boot, then daily,
 // written to <DATA_DIR>/backups on the persistent Volume (see src/backup.js).
 scheduleBackups();
+
+// Start the scheduled-content loop (queue + workers were built above). It stays
+// idle until SCHEDULED_CONTENT_ENABLED=true, not paused, and a client opts in.
+scheduler.start();
 
 process.on('SIGINT', () => {
   polling = false;

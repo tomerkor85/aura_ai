@@ -2,7 +2,9 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, packageOf } from './config.js';
-import { listAllClients, getClientByPhone, upsertClient, deleteClient, getUsage } from './db.js';
+import { db, listAllClients, getClientByPhone, upsertClient, deleteClient, getUsage } from './db.js';
+import * as Q from './quota.js';
+import * as D from './deliveries.js';
 import { enforceExpiry } from './subscription.js';
 import { runDailyTick } from './daily.js';
 import {
@@ -17,7 +19,7 @@ function clientIp(req) {
   return (req.headers['x-forwarded-for']?.split(',')[0].trim()) || req.socket.remoteAddress || 'unknown';
 }
 
-export function createAdminApp() {
+export function createAdminApp(controls = {}) {
   const app = express();
   app.set('trust proxy', 1); // behind Railway/other proxy for req.secure + real IP
   app.use(express.json({ limit: '1mb' }));
@@ -76,6 +78,33 @@ export function createAdminApp() {
     };
   }
 
+  // Full scheduling view for a client: plan, cycles, quota cards (included/used/
+  // additions/remaining), next delivery, and recent delivery/failure/adjustment
+  // history. Reads live from SQLite so it always reflects delivered rows.
+  function scheduleView(client) {
+    const now = new Date();
+    const tz = Q.clientTz(client);
+    const todayStr = Q.localDateStr(now, tz);
+    const ci = Q.cycleInfo(client, todayStr);
+    const delivered = D.deliveredCounts(db, client.phone, ci.weeklyStart, ci.c14Start);
+    const adj = D.adjustmentTotals(db, client.phone, ci.weeklyStart, ci.c14Start);
+    const quota = Q.quotaSummary(client, todayStr, delivered, adj);
+    return {
+      plan: client.package,
+      registration_date: client.registration_date,
+      send_time: Q.clientSendTime(client),
+      timezone: tz,
+      status: client.status,
+      scheduled_content_enabled: !!client.scheduled_content_enabled,
+      cycles: quota.cycles,
+      quota: { story: quota.story, carousel: quota.carousel, reel: quota.reel },
+      next_delivery_at: Q.nextDeliveryAt(client, now),
+      recent_deliveries: D.listRecentDeliveries(db, client.phone, 15),
+      recent_failures: D.listRecentFailures(db, client.phone, 10),
+      adjustments: D.listAdjustments(db, client.phone, 15),
+    };
+  }
+
   app.get('/api/clients', (req, res) => {
     res.json(listAllClients().map(withUsage));
   });
@@ -83,7 +112,66 @@ export function createAdminApp() {
   app.get('/api/clients/:phone', (req, res) => {
     const c = getClientByPhone(req.params.phone);
     if (!c) return res.status(404).json({ error: 'not found' });
-    res.json(withUsage(c));
+    res.json({ ...withUsage(c), schedule: scheduleView(c) });
+  });
+
+  // Manual, additive quota adjustment (audit-logged). Never overwrites usage.
+  app.post('/api/clients/:phone/adjustments', (req, res) => {
+    const c = getClientByPhone(req.params.phone);
+    if (!c) return res.status(404).json({ error: 'not found' });
+    const type = String(req.body?.content_type || '');
+    if (!['story', 'carousel', 'reel'].includes(type)) {
+      return res.status(400).json({ error: 'content_type must be story | carousel | reel' });
+    }
+    const delta = Math.trunc(Number(req.body?.delta));
+    if (!Number.isFinite(delta) || delta === 0) {
+      return res.status(400).json({ error: 'delta חייב להיות מספר שלם שונה מאפס' });
+    }
+    const now = new Date();
+    const ci = Q.cycleInfo(c, Q.localDateStr(now, Q.clientTz(c)));
+    const cycleStart = type === 'reel' ? ci.c14Start : ci.weeklyStart;
+    D.addAdjustment(db, {
+      phone: c.phone, content_type: type, cycle_start: cycleStart, delta,
+      reason: String(req.body?.reason || '').slice(0, 300), created_by: 'admin',
+    });
+    res.json({ ok: true, schedule: scheduleView(getClientByPhone(c.phone)) });
+  });
+
+  // --- Global scheduler control + queue health ---
+  function schedulerState() {
+    const counts = D.statusCounts(db);
+    return {
+      global_enabled: controls.globalEnabled ? controls.globalEnabled() : false,
+      paused: controls.isPaused ? controls.isPaused() : false,
+      active: controls.isActive ? controls.isActive() : false,
+      concurrency: controls.concurrency || {},
+      daily_limits: controls.limiterSnapshot ? controls.limiterSnapshot() : {},
+      workers_active: controls.active ? controls.active() : {},
+      queue: {
+        scheduled: counts.scheduled || 0,
+        generating: counts.generating || 0,
+        sending: counts.sending || 0,
+        delivered: counts.delivered || 0,
+        failed: counts.failed || 0,
+        unknown_delivery_state: counts.unknown_delivery_state || 0,
+        missed: counts.missed || 0,
+        oldest_queued: D.oldestQueued(db),
+      },
+      avg_duration_by_type: D.avgDurationByType(db),
+    };
+  }
+
+  app.get('/api/scheduler', (req, res) => res.json(schedulerState()));
+  app.post('/api/scheduler/pause', (req, res) => { if (controls.pause) controls.pause(); res.json(schedulerState()); });
+  app.post('/api/scheduler/resume', (req, res) => { if (controls.resume) controls.resume(); res.json(schedulerState()); });
+
+  // Manual retry of a failed / unknown_delivery_state / missed delivery (human review).
+  app.post('/api/deliveries/:id/retry', (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'bad id' });
+    const changed = D.retryManual(db, id);
+    if (!changed) return res.status(409).json({ error: 'delivery is not in a retryable state' });
+    res.json({ ok: true });
   });
 
   // Parse an ISO-ish datetime (e.g. from <input type="datetime-local">); null if invalid.
@@ -149,6 +237,21 @@ export function createAdminApp() {
       newPayment && endsAt && new Date(endsAt).getTime() > Date.now();
     if (reactivated) status = 'active';
 
+    // --- Scheduling fields (optional; DB applies 07:30 / Asia/Jerusalem defaults) ---
+    const sendTime = b.send_time ? String(b.send_time).trim() : null;
+    if (sendTime && !/^([01]?\d|2[0-3]):[0-5]\d$/.test(sendTime)) {
+      return res.status(400).json({ error: 'שעת שליחה יומית לא תקינה (פורמט HH:MM)' });
+    }
+    const timezone = b.timezone ? String(b.timezone).trim() : null;
+    if (timezone) {
+      try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }); }
+      catch { return res.status(400).json({ error: 'אזור זמן לא תקין' }); }
+    }
+    const registrationDate = b.registration_date ? parseDate(b.registration_date) : null;
+    if (b.registration_date && !registrationDate) {
+      return res.status(400).json({ error: 'תאריך רישום לא תקין' });
+    }
+
     upsertClient({
       phone,
       name: b.name,
@@ -158,6 +261,10 @@ export function createAdminApp() {
       profile: b.profile || {},
       paid_at: paidAt,
       subscription_ends_at: endsAt,
+      registration_date: registrationDate,
+      send_time: sendTime,
+      timezone,
+      scheduled_content_enabled: typeof b.scheduled_content_enabled === 'boolean' ? b.scheduled_content_enabled : undefined,
     });
     if (reactivated) logger.info('admin', `new payment recorded for ${phone} — auto-reactivated`);
     res.json({ ...getClientByPhone(phone), reactivated });
@@ -182,8 +289,8 @@ export function createAdminApp() {
   return app;
 }
 
-export function startAdmin() {
-  const app = createAdminApp();
+export function startAdmin(controls = {}) {
+  const app = createAdminApp(controls);
   app.listen(config.adminPort, () => {
     logger.info('admin', `panel on http://localhost:${config.adminPort}`);
     if (!config.adminPasswordHash) {

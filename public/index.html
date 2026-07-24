@@ -110,6 +110,32 @@
     #toast.show { opacity: 1; }
     .ghost-hint { color: var(--muted); text-align: center; margin-top: 40px; }
     .theme-toggle { background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; color: var(--ink); }
+
+    /* --- Scheduling quota cards + delivery tables --- */
+    .qcards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 10px 0 4px; }
+    @media (max-width: 560px) { .qcards { grid-template-columns: 1fr; } }
+    .qcard { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg); }
+    .qcard h3 { font-size: 14px; margin-bottom: 6px; color: var(--accent); }
+    .qrow { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; color: var(--muted); }
+    .qrow b { color: var(--ink); }
+    .qrow.rem { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 5px; }
+    .qrow.rem b { color: var(--accent); font-size: 17px; }
+    .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    @media (max-width: 560px) { .row3 { grid-template-columns: 1fr; } }
+    table.dtbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+    table.dtbl th, table.dtbl td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+    table.dtbl th { color: var(--muted); font-weight: 600; }
+    .st { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); }
+    .st.delivered { color: var(--ok); } .st.failed, .st.missed { color: var(--danger); }
+    .st.sending, .st.generating, .st.scheduled { color: var(--accent); }
+    .st.unknown_delivery_state { color: var(--danger); font-weight: 600; }
+    .globalbar { padding: 8px 20px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; }
+    .globalbar:empty { display: none; }
+    .globalbar .gb-row { display: flex; gap: 10px; align-items: center; }
+    .globalbar .gb-metrics { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); }
+    .globalbar .gb-metrics .warn { color: var(--danger); font-weight: 600; }
+    .globalbar .btn { padding: 4px 12px; }
+    .retry-btn { padding: 1px 8px; font-size: 11px; }
   </style>
 </head>
 <body>
@@ -136,6 +162,7 @@
         <button class="btn" onclick="logout()">יציאה</button>
       </div>
     </header>
+    <div id="globalbar" class="globalbar"></div>
     <div class="layout">
       <aside>
         <h3>לקוחות</h3>
@@ -217,6 +244,7 @@
     async function loadClients() {
       clients = await api('GET', '/clients');
       renderList();
+      renderGlobalBar();
       if (current) selectClient(current);
       else if (!clients.length) newClient();
       else selectClient(clients[0].phone);
@@ -294,9 +322,126 @@
       return `<div class="hint">בתוקף עד ${when} — עוד ${fmtDuration(diff)}. בסיום התוקף הלקוח יושהה אוטומטית ויקבל הודעה חד פעמית</div>`;
     }
 
+    // --- Scheduling / quota rendering ---
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+    function fmtDateTime(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
+    }
+    function quotaCard(title, q, cycleLabel) {
+      return `<div class="qcard"><h3>${title}</h3>
+        <div class="hint">${cycleLabel}</div>
+        <div class="qrow"><span>כלול</span><b>${q.included}</b></div>
+        <div class="qrow"><span>נוצל</span><b>${q.used}</b></div>
+        <div class="qrow"><span>תוספות אדמין</span><b>${q.adjustments}</b></div>
+        <div class="qrow rem"><span>נותר</span><b>${q.remaining}</b></div></div>`;
+    }
+    function renderDeliveries(rows) {
+      if (!rows || !rows.length) return '<div class="hint">אין רשומות</div>';
+      const type = { story: 'סטורי', carousel: 'קרוסלה', reel: 'ריל' };
+      return `<table class="dtbl"><thead><tr><th>סוג</th><th>תאריך</th><th>סטטוס</th><th>ניסיונות</th><th>הערה</th></tr></thead><tbody>${
+        rows.map((r) => `<tr>
+          <td>${type[r.content_type] || esc(r.content_type)} #${r.sequence_number}</td>
+          <td>${esc(r.scheduled_date)}</td>
+          <td><span class="st ${esc(r.status)}">${esc(r.status)}</span>${['failed', 'unknown_delivery_state', 'missed'].includes(r.status) ? ` <button class="btn retry-btn" onclick="retryDelivery(${r.id})">נסה שוב</button>` : ''}</td>
+          <td>${r.retry_count}</td>
+          <td>${esc(r.failure_reason || '')}</td></tr>`).join('')
+      }</tbody></table>`;
+    }
+    function renderAdjustments(rows) {
+      const type = { story: 'סטוריז', carousel: 'קרוסלות', reel: 'רילים' };
+      return `<table class="dtbl"><thead><tr><th>סוג</th><th>כמות</th><th>סיבה</th><th>מתי</th></tr></thead><tbody>${
+        rows.map((r) => `<tr><td>${type[r.content_type] || esc(r.content_type)}</td><td>${r.delta > 0 ? '+' : ''}${r.delta}</td><td>${esc(r.reason || '')}</td><td>${fmtDateTime(r.created_at)}</td></tr>`).join('')
+      }</tbody></table>`;
+    }
+    function scheduleSection(sc) {
+      const cyc = sc.cycles;
+      return `
+      <fieldset>
+        <legend>מכסות ומחזורים</legend>
+        <div class="hint">מחזור שבועי: ${esc(cyc.weekly.start)} → ${esc(cyc.weekly.end)} · מחזור 14 יום: ${esc(cyc.biweekly.start)} → ${esc(cyc.biweekly.end)}</div>
+        <div class="hint">המשלוח הבא: ${fmtDateTime(sc.next_delivery_at)} (${esc(sc.timezone)})${sc.status !== 'active' ? ' · ⚠️ הלקוח אינו פעיל — לא יישלח תוכן' : ''}</div>
+        <div class="qcards">
+          ${quotaCard('סטוריז', sc.quota.story, 'מחזור שבועי')}
+          ${quotaCard('קרוסלות', sc.quota.carousel, 'מחזור שבועי')}
+          ${quotaCard('רילים', sc.quota.reel, 'מחזור 14 יום')}
+        </div>
+        <div class="row3">
+          <div class="field"><label>הוסף סטוריז</label><input id="adj_story" type="number" step="1" value="0"></div>
+          <div class="field"><label>הוסף קרוסלות</label><input id="adj_carousel" type="number" step="1" value="0"></div>
+          <div class="field"><label>הוסף רילים</label><input id="adj_reel" type="number" step="1" value="0"></div>
+        </div>
+        <div class="field"><label>סיבה לתוספת</label><input id="adj_reason" placeholder="למשל: פיצוי על תקלה"></div>
+        <button class="btn" onclick="applyAdjustments()">החל תוספת מכסה</button>
+        <div class="hint">התוספות מצטברות, נרשמות ביומן, ולא דורסות את מכסת החבילה.</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>משלוחים אחרונים</legend>
+        ${renderDeliveries(sc.recent_deliveries)}
+        ${sc.recent_failures && sc.recent_failures.length ? `<h3 style="margin-top:14px;font-size:14px;color:var(--danger)">כשלים והחמצות</h3>${renderDeliveries(sc.recent_failures)}` : ''}
+        ${sc.adjustments && sc.adjustments.length ? `<h3 style="margin-top:14px;font-size:14px">היסטוריית תוספות</h3>${renderAdjustments(sc.adjustments)}` : ''}
+      </fieldset>`;
+    }
+    async function applyAdjustments() {
+      if (!current) return;
+      const items = [
+        ['story', parseInt($('adj_story').value, 10)],
+        ['carousel', parseInt($('adj_carousel').value, 10)],
+        ['reel', parseInt($('adj_reel').value, 10)],
+      ].filter(([, n]) => Number.isFinite(n) && n !== 0);
+      if (!items.length) return toast('לא הוזנה תוספת');
+      const reason = $('adj_reason').value.trim();
+      try {
+        for (const [content_type, delta] of items) {
+          await api('POST', '/clients/' + encodeURIComponent(current) + '/adjustments', { content_type, delta, reason });
+        }
+        toast('התוספת הוחלה');
+        await selectClient(current);
+      } catch (e) { toast('שגיאה: ' + e.message); }
+    }
+
+    // --- Global scheduler control bar ---
+    async function renderGlobalBar() {
+      try {
+        const s = await api('GET', '/scheduler');
+        const q = s.queue;
+        const label = !s.global_enabled ? '⚫ כבוי (SCHEDULED_CONTENT_ENABLED=false)' : (s.paused ? '⏸ מושהה' : '🟢 פעיל');
+        const btn = s.global_enabled
+          ? (s.paused ? '<button class="btn" onclick="resumeScheduler()">המשך</button>' : '<button class="btn danger" onclick="pauseScheduler()">השהה הכל</button>')
+          : '';
+        const names = { story: 'סטורי', carousel: 'קרוסלה', reel: 'ריל' };
+        const avg = s.avg_duration_by_type || {};
+        const avgStr = ['story', 'carousel', 'reel'].map((t) => `${names[t]} ${(avg[t] && avg[t].avgSeconds != null) ? avg[t].avgSeconds + 's' : '—'}`).join(' · ');
+        const lim = s.daily_limits && s.daily_limits.used ? s.daily_limits : { used: {}, limits: {} };
+        $('globalbar').innerHTML = `
+          <div class="gb-row"><b>מתזמן תוכן:</b> <span>${label}</span> ${btn}</div>
+          <div class="gb-metrics">
+            <span>בתור: ${q.scheduled}</span>
+            <span>פעילים: ${q.generating + q.sending}</span>
+            <span>נשלחו: ${q.delivered}</span>
+            <span>נכשלו: ${q.failed}</span>
+            <span class="${q.unknown_delivery_state ? 'warn' : ''}">מצב לא ידוע: ${q.unknown_delivery_state}</span>
+            <span>הוחמצו: ${q.missed}</span>
+            <span>ותיק בתור: ${fmtDateTime(q.oldest_queued)}</span>
+            <span>קונקרנטיות S/C/R: ${s.concurrency.story}/${s.concurrency.carousel}/${s.concurrency.reel}</span>
+            <span>זמן ממוצע: ${avgStr}</span>
+            <span>מכסת ספק היום (S/C/R/WA): ${lim.used.story || 0}/${lim.used.carousel || 0}/${lim.used.reel || 0}/${lim.used.whatsapp || 0}</span>
+          </div>`;
+      } catch { $('globalbar').innerHTML = ''; }
+    }
+    async function pauseScheduler() { try { await api('POST', '/scheduler/pause'); toast('המתזמן הושהה'); renderGlobalBar(); } catch (e) { toast('שגיאה: ' + e.message); } }
+    async function resumeScheduler() { try { await api('POST', '/scheduler/resume'); toast('המתזמן חודש'); renderGlobalBar(); } catch (e) { toast('שגיאה: ' + e.message); } }
+    async function retryDelivery(id) {
+      try { await api('POST', '/deliveries/' + id + '/retry'); toast('נשלח לתור מחדש'); if (current) await selectClient(current); renderGlobalBar(); }
+      catch (e) { toast('שגיאה: ' + e.message); }
+    }
+
     function editorTemplate(c) {
       const pr = c.profile || {};
       const bi = pr.brand_identity || {};
+      const sc = c.schedule || null;
       return `
       <div class="actions" style="margin-bottom:16px">
         <h2>${c.phone ? 'עריכת לקוח' : 'לקוח חדש'}</h2>
@@ -346,6 +491,28 @@
       </fieldset>
 
       <fieldset>
+        <legend>תזמון שליחה יומי</legend>
+        <div class="row">
+          <div class="field"><label>תאריך רישום <span class="hint">(עוגן המחזורים)</span></label>
+            <input type="datetime-local" id="f_reg" value="${toLocalInput(c.registration_date)}"></div>
+          <div class="field"><label>שעת שליחה יומית</label>
+            <input type="time" id="f_send_time" value="${P(c.send_time) || '07:30'}"></div>
+        </div>
+        <div class="field"><label>אזור זמן (IANA)</label>
+          <input id="f_tz" value="${P(c.timezone) || 'Asia/Jerusalem'}" placeholder="Asia/Jerusalem">
+          <div class="hint">ברירת מחדל 07:30 · Asia/Jerusalem. שינוי השעה משפיע רק על משלוחים עתידיים; המכסה וההיסטוריה נשמרות.</div></div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="f_sce" ${c.scheduled_content_enabled ? 'checked' : ''} style="width:auto;margin:0">
+            הפעל שליחת תוכן מתוזמן ללקוח זה
+          </label>
+          <div class="hint">כבוי כברירת מחדל. תוכן יישלח רק אם גם המתג הגלובלי דלוק, הלקוח פעיל, והתיבה הזו מסומנת.</div>
+        </div>
+      </fieldset>
+
+      ${sc ? scheduleSection(sc) : ''}
+
+      <fieldset>
         <legend>אפיון העסק</legend>
         <div class="field"><label>על העסק</label><textarea id="p_about">${P(pr.about)}</textarea></div>
         <div class="field"><label>קהל היעד</label><textarea id="p_audience">${P(pr.audience)}</textarea></div>
@@ -371,12 +538,18 @@
       </div>`;
     }
 
-    function selectClient(phone) {
+    async function selectClient(phone) {
       current = phone;
-      const c = clients.find((x) => x.phone === phone);
-      if (!c) return;
-      $('editor').innerHTML = editorTemplate(c);
       renderList();
+      try {
+        // Fetch the full detail (includes live schedule + quota) rather than the light list row.
+        const c = await api('GET', '/clients/' + encodeURIComponent(phone));
+        $('editor').innerHTML = editorTemplate(c);
+      } catch (e) {
+        const fallback = clients.find((x) => x.phone === phone);
+        if (fallback) $('editor').innerHTML = editorTemplate(fallback);
+        else toast('שגיאה בטעינת לקוח: ' + e.message);
+      }
     }
     function newClient() {
       current = null;
@@ -403,6 +576,10 @@
         status: val('f_status'),
         paid_at: isoOrNull('f_paid_at'),
         subscription_ends_at: isoOrNull('f_sub_end'),
+        registration_date: isoOrNull('f_reg'),
+        send_time: val('f_send_time') || null,
+        timezone: val('f_tz') || null,
+        scheduled_content_enabled: $('f_sce') ? $('f_sce').checked : false,
         profile: {
           about: val('p_about'),
           audience: val('p_audience'),

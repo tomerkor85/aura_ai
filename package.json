@@ -13,7 +13,8 @@
     "check-openai": "node scripts/check-openai.js",
     "check-settings": "node scripts/check-settings.js",
     "send-daily": "node scripts/send-daily.js",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "test": "node --test test/"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
