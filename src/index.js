@@ -12,6 +12,7 @@ import { createProviderLimiter } from './limiter.js';
 import { makeProcessItem } from './content-delivery.js';
 import { createScheduler } from './scheduler.js';
 import { getSetting, setSetting } from './deliveries.js';
+import { balanceReplyFor } from './quota-balance.js';
 import { logger, snip } from './logger.js';
 
 const missing = validateConfig();
@@ -130,8 +131,23 @@ async function handleIncoming({ phone, text, nonText }) {
   const client = getClientByPhone(phone);
   if (!client) {
     logger.info('in', `unknown number ${phone} - ignoring`);
-    return;
+    return; // unknown-user behavior preserved — never expose any customer info
   }
+
+  // Customer-facing "יתרה" balance command. Runs BEFORE the AI chat / expiry /
+  // status early-returns so every registered customer (active/suspended/canceled/
+  // expired) can read their balance. Pure read: no LLM, no generation, no quota or
+  // usage change. Always resolved by the sender's own phone (no cross-customer access).
+  if (!nonText) {
+    const balanceMsg = balanceReplyFor(db, client, text);
+    if (balanceMsg) {
+      readChat(phone).catch(() => {});
+      await sendText(phone, balanceMsg);
+      logger.info('balance', `${phone}: sent scheduled-content balance`);
+      return;
+    }
+  }
+
   // Automatic expiry: subscription end passed -> suspend now and tell them once.
   if (await enforceExpiry(client)) return;
   if (client.status !== 'active') {

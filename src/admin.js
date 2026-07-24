@@ -5,6 +5,7 @@ import { config, packageOf } from './config.js';
 import { db, listAllClients, getClientByPhone, upsertClient, deleteClient, getUsage } from './db.js';
 import * as Q from './quota.js';
 import * as D from './deliveries.js';
+import { clientQuotaSummary } from './quota-balance.js';
 import { enforceExpiry } from './subscription.js';
 import { runDailyTick } from './daily.js';
 import {
@@ -84,11 +85,8 @@ export function createAdminApp(controls = {}) {
   function scheduleView(client) {
     const now = new Date();
     const tz = Q.clientTz(client);
-    const todayStr = Q.localDateStr(now, tz);
-    const ci = Q.cycleInfo(client, todayStr);
-    const delivered = D.deliveredCounts(db, client.phone, ci.weeklyStart, ci.c14Start);
-    const adj = D.adjustmentTotals(db, client.phone, ci.weeklyStart, ci.c14Start);
-    const quota = Q.quotaSummary(client, todayStr, delivered, adj);
+    // Same computation the customer "יתרה" command uses -> identical numbers.
+    const quota = clientQuotaSummary(db, client, now);
     return {
       plan: client.package,
       registration_date: client.registration_date,

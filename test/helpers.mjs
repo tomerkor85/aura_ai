@@ -21,14 +21,22 @@ export const testConfig = {
   itemTimeoutMs: 5_000,
 };
 
-// Fresh in-memory DB with a minimal clients table + the scheduler schema.
+// Fresh in-memory DB mirroring the real clients table (core + subscription cols)
+// plus the monthly usage table, then the scheduler schema.
 export function makeDb() {
   const db = new Database(':memory:');
-  db.exec(`CREATE TABLE clients (
-    phone TEXT PRIMARY KEY, name TEXT, business_name TEXT,
-    package TEXT DEFAULT 'basic', status TEXT DEFAULT 'active',
-    profile TEXT, created_at TEXT
-  );`);
+  db.exec(`
+    CREATE TABLE clients (
+      phone TEXT PRIMARY KEY, name TEXT, business_name TEXT,
+      package TEXT DEFAULT 'basic', status TEXT DEFAULT 'active',
+      profile TEXT, created_at TEXT,
+      notified_status TEXT, paid_at TEXT, subscription_ends_at TEXT
+    );
+    CREATE TABLE usage (
+      phone TEXT, month TEXT, images INTEGER NOT NULL DEFAULT 0, videos INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (phone, month)
+    );
+  `);
   applyScheduleSchema(db);
   return db;
 }
