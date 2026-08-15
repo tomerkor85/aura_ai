@@ -259,6 +259,7 @@
         b.innerHTML = `<div class="biz"></div><div class="meta">
           <span class="pkg"></span>
           <span class="pill ${c.status !== 'active' ? 'paused' : ''}">${{ active: 'פעיל', suspended: 'מושהה', canceled: 'מבוטל' }[c.status] || c.status}</span>
+          <span class="pill ${c.scheduled_content_enabled ? '' : 'paused'}">${c.scheduled_content_enabled ? '⏱ מתוזמן' : '⏱ ללא תזמון'}</span>
         </div>`;
         b.querySelector('.biz').textContent = c.business_name;
         b.querySelector('.pkg').textContent = c.package === 'premium' ? 'מורחבת' : 'בסיסית';
@@ -415,8 +416,15 @@
         const avg = s.avg_duration_by_type || {};
         const avgStr = ['story', 'carousel', 'reel'].map((t) => `${names[t]} ${(avg[t] && avg[t].avgSeconds != null) ? avg[t].avgSeconds + 's' : '—'}`).join(' · ');
         const lim = s.daily_limits && s.daily_limits.used ? s.daily_limits : { used: {}, limits: {} };
+        // This bar is the GLOBAL state only. A client receives content only if it is
+        // ALSO opted in individually, so the bar reports how many are — otherwise
+        // '🟢 פעיל' reads as "everyone is getting content", which it never means.
+        const optedIn = clients.filter((c) => c.scheduled_content_enabled && c.status === 'active').length;
+        const optedNote = clients.length
+          ? `<span class="hint">${optedIn} מתוך ${clients.length} לקוחות מופעלים לתזמון${optedIn ? '' : ' — לא יישלח תוכן לאף אחד'}</span>`
+          : '';
         $('globalbar').innerHTML = `
-          <div class="gb-row"><b>מתזמן תוכן:</b> <span>${label}</span> ${btn}</div>
+          <div class="gb-row"><b>מתזמן תוכן (גלובלי):</b> <span>${label}</span> ${btn} ${optedNote}</div>
           <div class="gb-metrics">
             <span>בתור: ${q.scheduled}</span>
             <span>פעילים: ${q.generating + q.sending}</span>
