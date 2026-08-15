@@ -272,7 +272,23 @@ export function createAdminApp(controls = {}) {
       scheduled_content_enabled: typeof b.scheduled_content_enabled === 'boolean' ? b.scheduled_content_enabled : undefined,
     });
     if (reactivated) logger.info('admin', `new payment recorded for ${phone} — auto-reactivated`);
-    res.json({ ...getClientByPhone(phone), reactivated });
+
+    // A client that becomes eligible partway through the day must NOT receive that
+    // day's batch — creating a client at 14:00 should start delivery tomorrow, not
+    // fire immediately. Seal today off by writing its items as 'skipped'; the next
+    // tick's INSERT OR IGNORE then finds the keys taken and enqueues nothing.
+    const saved = getClientByPhone(phone);
+    const wasEligible = !!(existing && existing.scheduled_content_enabled && existing.status === 'active');
+    const nowEligible = !!(saved.scheduled_content_enabled && saved.status === 'active');
+    if (nowEligible && !wasEligible) {
+      const now = new Date();
+      if (Q.isPastSendTime(saved, now)) {
+        const todayStr = Q.localDateStr(now, Q.clientTz(saved));
+        const sealed = D.seedSkippedItems(db, Q.dueItems(saved, todayStr));
+        if (sealed) logger.info('admin', `${phone} enabled after today's send time — sealed ${sealed} item(s) as skipped`);
+      }
+    }
+    res.json({ ...saved, reactivated });
   });
 
   app.delete('/api/clients/:phone', (req, res) => {

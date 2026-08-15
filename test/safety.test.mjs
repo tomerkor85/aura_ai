@@ -45,6 +45,46 @@ test('An enabled client alongside a disabled one: only the enabled one is enqueu
   assert.equal(count(db, "WHERE phone='off'"), 0);
 });
 
+test('Send window opens at send_time and closes after the grace period', () => {
+  const db = makeDb();
+  const c = addClient(db, { phone: '1', registration_date: REG }); // 07:30 Asia/Jerusalem
+  const at = (utc) => Q.isSendDue(c, new Date(Date.parse(utc)));
+  assert.equal(at('2026-07-15T04:25:00Z'), false, '07:25 local — before the window opens');
+  assert.equal(at('2026-07-15T04:35:00Z'), true, '07:35 local — just inside');
+  assert.equal(at('2026-07-15T07:15:00Z'), true, '10:15 local — recovery after downtime');
+  assert.equal(at('2026-07-15T08:00:00Z'), false, '11:00 local — window closed');
+  assert.equal(at('2026-07-15T20:07:00Z'), false, '23:07 local — must not fire the morning batch');
+});
+
+test('Client enabled after today\'s send time: the day is sealed and nothing is sent', async () => {
+  const db = makeDb();
+  const c = addClient(db, { phone: '1', registration_date: REG });
+  const now = new Date(Date.parse(MORNING)); // 09:00 local — window open
+  assert.equal(Q.isSendDue(c, now), true, 'precondition: without sealing this day would deliver');
+
+  const sealed = D.seedSkippedItems(db, Q.dueItems(c, '2026-07-15'));
+  assert.ok(sealed > 0, 'signup seals the current day');
+
+  const h = makeHarness(db, { clock: fakeClock(Date.parse(MORNING)) });
+  h.scheduler.tick();
+  await drain(db, h.queue, h.clock);
+
+  assert.equal(count(db, "WHERE status='scheduled'"), 0, 'the tick enqueues nothing for the sealed day');
+  assert.equal(count(db, "WHERE status='delivered'"), 0, 'nothing is delivered on the signup day');
+  assert.equal(count(db, "WHERE status='skipped'"), sealed, 'the sealed rows are left untouched');
+});
+
+test('Sealing one day does not block the next one', async () => {
+  const db = makeDb();
+  const c = addClient(db, { phone: '1', registration_date: REG });
+  D.seedSkippedItems(db, Q.dueItems(c, '2026-07-15'));
+  // Next local day, inside its window: delivery starts normally.
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-16T06:00:00Z')) });
+  h.scheduler.tick(); // the tick dispatches, so rows may already have left 'scheduled'
+  assert.ok(count(db, "WHERE scheduled_date='2026-07-16'") > 0, 'the next day enqueues normally');
+  assert.equal(count(db, "WHERE scheduled_date='2026-07-16' AND status='skipped'"), 0, 'and is not sealed');
+});
+
 test('Partial carousel retries ONLY the missing slides (delivered slides never resent)', async () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });

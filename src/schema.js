@@ -10,7 +10,11 @@ export function applyScheduleSchema(db) {
   db.exec(`
     -- The persistent delivery queue. One row per scheduled content item; the row
     -- IS the job. State: scheduled -> generating -> sending -> delivered
-    --                                             \\-> failed | (missed, never enqueued for work)
+    --                                             \\-> failed
+    -- Terminal, never enqueued for work (claimNext only ever picks 'scheduled'):
+    --   missed  - a past day that was never delivered (visibility only)
+    --   skipped - the day a client was created/opted in partway through, sealed so
+    --             signing up mid-day never triggers that day's batch
     CREATE TABLE IF NOT EXISTS content_deliveries (
       id               INTEGER PRIMARY KEY AUTOINCREMENT,
       phone            TEXT NOT NULL,

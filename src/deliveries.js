@@ -37,6 +37,24 @@ export function markMissedItems(db, items) {
   return n;
 }
 
+// Seal off a day's items for a client that only became eligible partway through it
+// (just created, or just opted in). The rows are written as 'skipped', which no
+// worker ever claims — claimNext() only looks at 'scheduled' — and which quota
+// never counts, since only 'delivered' does. The next scheduler tick then finds
+// the keys already present and its INSERT OR IGNORE enqueues nothing, so delivery
+// starts cleanly at the client's NEXT send time instead of firing on signup.
+export function seedSkippedItems(db, items) {
+  const stmt = db.prepare(`
+    INSERT OR IGNORE INTO content_deliveries
+      (phone, content_type, cycle_start, scheduled_date, sequence_number, idempotency_key, status)
+    VALUES (@phone, @content_type, @cycle_start, @scheduled_date, @sequence_number, @idempotency_key, 'skipped')
+  `);
+  let n = 0;
+  const tx = db.transaction((rows) => { for (const r of rows) n += stmt.run(r).changes; });
+  tx(items);
+  return n;
+}
+
 // --- claim / transitions -----------------------------------------------------
 
 // Atomically claim the next due 'scheduled' item of a type. Returns the row or null.
@@ -127,7 +145,7 @@ export function retryManual(db, id) {
     UPDATE content_deliveries
     SET status = 'scheduled', retry_count = 0, next_attempt_at = NULL,
         lease_expires_at = NULL, worker_id = NULL, failure_reason = NULL
-    WHERE id = ? AND status IN ('failed','unknown_delivery_state','missed')
+    WHERE id = ? AND status IN ('failed','unknown_delivery_state','missed','skipped')
   `).run(id).changes;
 }
 

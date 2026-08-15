@@ -137,8 +137,25 @@ export function quotaSummary(client, todayStr, delivered = {}, adjustments = {})
   };
 }
 
-// Is it at/after the client's send time on their local clock?
+// Is NOW inside the client's send window on their local clock?
+//
+// The window opens at send_time and closes `sendGraceMinutes` later, so a service
+// that was down at 07:30 still delivers when it recovers at 09:00 — but enabling a
+// client (or redeploying) late at night no longer fires that morning's batch.
+//
+// The window never wraps past local midnight: with send_time 23:00 and a 3h grace,
+// recovery stops at 23:59, because the following minute belongs to the next local
+// date and is scheduled as its own day.
 export function isSendDue(client, now) {
+  const cur = localMinutes(now, clientTz(client));
+  const send = parseHM(clientSendTime(client));
+  return cur >= send && cur < send + scheduleConfig.sendGraceMinutes;
+}
+
+// Has today's send moment already passed on the client's local clock? Used when a
+// client becomes eligible mid-day, to decide whether today's batch must be sealed
+// off. Deliberately NOT windowed — 'already happened today', not 'due now'.
+export function isPastSendTime(client, now) {
   return localMinutes(now, clientTz(client)) >= parseHM(clientSendTime(client));
 }
 

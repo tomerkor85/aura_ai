@@ -142,6 +142,11 @@ export const scheduleConfig = {
     whatsapp: intEnv('MAX_WHATSAPP_PER_DAY', 1000),
   },
   defaultSendTime: hmEnv('DEFAULT_SEND_TIME', '07:30'),
+  // How long after send_time a client still counts as due. Bounds the same-day
+  // catch-up: a service down at 07:30 recovers, but enabling a client at 23:00
+  // no longer fires that morning's batch. Set to 1440 for the old behaviour
+  // (due any time after send_time on the same local date).
+  sendGraceMinutes: intEnv('SEND_GRACE_MINUTES', 180),
   defaultTz: process.env.TZ_NAME || 'Asia/Jerusalem',
   // Scheduler tick: at least once per minute (clamped to <= 60s).
   tickMs: Math.min(60_000, intEnv('SCHEDULER_TICK_MS', 30_000)),
