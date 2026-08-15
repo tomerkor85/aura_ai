@@ -117,6 +117,16 @@ const intEnv = (name, def) => {
   return Number.isFinite(n) && n > 0 ? n : def;
 };
 
+// Send times are 'HH:MM', 24-hour. A 12-hour value like '10:09PM' parses to
+// 10:09 in the MORNING instead of failing, so anything malformed is rejected
+// here rather than silently shifting every client's send time.
+export const isValidHM = (s) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(s ?? '').trim());
+
+const hmEnv = (name, def) => {
+  const v = (process.env[name] || '').trim();
+  return isValidHM(v) ? v : def;
+};
+
 // Scheduler + delivery-queue tuning. All overridable via env for prod control.
 export const scheduleConfig = {
   // MASTER SWITCH — off by default. The scheduler never enqueues, and the queue
@@ -131,7 +141,7 @@ export const scheduleConfig = {
     reel: intEnv('MAX_REEL_PER_DAY', 20),
     whatsapp: intEnv('MAX_WHATSAPP_PER_DAY', 1000),
   },
-  defaultSendTime: process.env.DEFAULT_SEND_TIME || '07:30',
+  defaultSendTime: hmEnv('DEFAULT_SEND_TIME', '07:30'),
   defaultTz: process.env.TZ_NAME || 'Asia/Jerusalem',
   // Scheduler tick: at least once per minute (clamped to <= 60s).
   tickMs: Math.min(60_000, intEnv('SCHEDULER_TICK_MS', 30_000)),

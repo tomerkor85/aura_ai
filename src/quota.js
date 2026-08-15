@@ -4,7 +4,7 @@
 // survive restarts/deploys and never reset on calendar boundaries (Sun/1st/etc).
 // Every function takes an explicit `now`/date string, so tests inject a fake
 // clock and get deterministic results. No DB access, no side effects.
-import { scheduleQuotaOf, scheduleConfig } from './config.js';
+import { scheduleQuotaOf, scheduleConfig, isValidHM } from './config.js';
 
 const DAY_MS = 86_400_000;
 const pad = (n) => String(n).padStart(2, '0');
@@ -69,7 +69,12 @@ export function zonedWallToUtc(dateStr, h, mi, tz) {
 }
 
 export function clientTz(client) { return client.timezone || scheduleConfig.defaultTz; }
-export function clientSendTime(client) { return client.send_time || scheduleConfig.defaultSendTime; }
+// A malformed stored value (hand-edited DB, pre-validation row) would misparse
+// into the wrong minute-of-day, so it falls back to the default instead.
+export function clientSendTime(client) {
+  const t = client.send_time || scheduleConfig.defaultSendTime;
+  return isValidHM(t) ? t : scheduleConfig.defaultSendTime;
+}
 
 // Registration anchor as a local date in the client's tz (falls back to created_at).
 export function regLocalDate(client) {

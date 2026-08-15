@@ -317,7 +317,7 @@
       const end = new Date(c.subscription_ends_at);
       if (Number.isNaN(end.getTime())) return '';
       const diff = end - Date.now();
-      const when = end.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
+      const when = end.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short', hour12: false });
       if (diff < 0) return `<div class="hint" style="color:#e5484d">⚠️ המנוי פג ב־${when} (לפני ${fmtDuration(-diff)}) — הלקוח מושהה אוטומטית; רישום תשלום חדש יחזיר אותו לפעיל</div>`;
       return `<div class="hint">בתוקף עד ${when} — עוד ${fmtDuration(diff)}. בסיום התוקף הלקוח יושהה אוטומטית ויקבל הודעה חד פעמית</div>`;
     }
@@ -327,7 +327,7 @@
     function fmtDateTime(iso) {
       if (!iso) return '—';
       const d = new Date(iso);
-      return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short' });
+      return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short', hour12: false });
     }
     function quotaCard(title, q, cycleLabel) {
       return `<div class="qcard"><h3>${title}</h3>
@@ -480,11 +480,11 @@
         <div class="row">
           <div class="field">
             <label>מועד תשלום אחרון</label>
-            <input type="datetime-local" id="f_paid_at" value="${toLocalInput(c.paid_at)}" onchange="autoFillSubEnd()">
+            <input type="datetime-local" id="f_paid_at" lang="en-GB" value="${toLocalInput(c.paid_at)}" onchange="autoFillSubEnd()">
           </div>
           <div class="field">
             <label>המנוי מסתיים ב־ <span class="hint">(ברירת מחדל: חודש מהתשלום)</span></label>
-            <input type="datetime-local" id="f_sub_end" value="${toLocalInput(c.subscription_ends_at)}">
+            <input type="datetime-local" id="f_sub_end" lang="en-GB" value="${toLocalInput(c.subscription_ends_at)}">
           </div>
         </div>
         ${subSummary(c)}
@@ -494,13 +494,16 @@
         <legend>תזמון שליחה יומי</legend>
         <div class="row">
           <div class="field"><label>תאריך רישום <span class="hint">(עוגן המחזורים)</span></label>
-            <input type="datetime-local" id="f_reg" value="${toLocalInput(c.registration_date)}"></div>
-          <div class="field"><label>שעת שליחה יומית</label>
-            <input type="time" id="f_send_time" value="${P(c.send_time) || '07:30'}"></div>
+            <input type="datetime-local" id="f_reg" lang="en-GB" value="${toLocalInput(c.registration_date)}"></div>
+          <div class="field"><label>שעת שליחה יומית <span class="hint">(24 שעות)</span></label>
+            <input type="text" id="f_send_time" dir="ltr" inputmode="numeric" maxlength="5"
+                   pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:MM"
+                   style="text-align:left" value="${P(c.send_time) || '07:30'}"></div>
         </div>
         <div class="field"><label>אזור זמן (IANA)</label>
           <input id="f_tz" value="${P(c.timezone) || 'Asia/Jerusalem'}" placeholder="Asia/Jerusalem">
-          <div class="hint">ברירת מחדל 07:30 · Asia/Jerusalem. שינוי השעה משפיע רק על משלוחים עתידיים; המכסה וההיסטוריה נשמרות.</div></div>
+          <div class="hint">ברירת מחדל 07:30 · Asia/Jerusalem. השעה בפורמט 24 שעות (למשל 22:09 לעשר ותשע בערב) — אין AM/PM.
+            שינוי השעה משפיע רק על משלוחים עתידיים; המכסה וההיסטוריה נשמרות.</div></div>
         <div class="field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="f_sce" ${c.scheduled_content_enabled ? 'checked' : ''} style="width:auto;margin:0">
