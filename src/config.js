@@ -43,6 +43,10 @@ export const config = {
 
   tz: process.env.TZ_NAME || 'Asia/Jerusalem',
 
+  // Country code applied to locally-formatted numbers entered in the panel
+  // (0542889353 -> 972542889353). WhatsApp only accepts international form.
+  defaultCountryCode: (process.env.DEFAULT_COUNTRY_CODE || '972').replace(/\D/g, ''),
+
   // Max edits per single generated image / video before the client must create a new one.
   maxImageEdits: parseInt(process.env.MAX_IMAGE_EDITS || '3', 10),
   maxVideoEdits: parseInt(process.env.MAX_VIDEO_EDITS || '1', 10),

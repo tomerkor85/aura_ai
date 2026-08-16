@@ -28,6 +28,22 @@ async function post(method, body) {
   return res.json();
 }
 
+// WhatsApp addresses numbers in international form with no '+' and no leading
+// zero: 972542889353. A local number (0542889353) is a valid-looking string that
+// Green API rejects with "'chatId': invalid phone number", so it is converted
+// here rather than stored and discovered at send time.
+//
+// Returns null when the input cannot be a phone number, so callers can refuse it.
+export function normalizePhone(input, countryCode = config.defaultCountryCode) {
+  let digits = String(input || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('00')) digits = digits.slice(2);      // 00972... -> 972...
+  if (digits.startsWith('0')) digits = countryCode + digits.slice(1); // 054... -> 97254...
+  // E.164 allows up to 15 digits; anything under 8 is not a reachable number.
+  if (digits.length < 8 || digits.length > 15) return null;
+  return digits;
+}
+
 export function phoneToChatId(phone) {
   return `${phone}@c.us`;
 }

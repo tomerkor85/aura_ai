@@ -4,6 +4,7 @@ import { fakeClock } from '../src/clock.js';
 import { createProviderLimiter } from '../src/limiter.js';
 import * as Q from '../src/quota.js';
 import * as D from '../src/deliveries.js';
+import { normalizePhone, phoneToChatId } from '../src/greenapi.js';
 import { makeDb, addClient, makeHarness, makeFakes, drain, deferred, tick } from './helpers.mjs';
 
 const REG = '2026-07-19T05:00:00Z';
@@ -128,6 +129,22 @@ test('A day sealed at signup is never credited — it was never owed', () => {
   assert.equal(count(db, "WHERE scheduled_date='2026-07-19' AND status='missed'"), 0);
   assert.equal(db.prepare("SELECT COALESCE(SUM(delta),0) d FROM quota_adjustments WHERE phone='1'").get().d, 0);
   assert.equal(h.missedNotices.length, 0, 'and no apology for content that was never due');
+});
+
+test('Locally-formatted numbers are converted before they can reach WhatsApp', () => {
+  // 0542889353 looks right in the panel and is stored happily, but WhatsApp only
+  // accepts international form — the mismatch surfaced as a send-time rejection
+  // hours later, so it is resolved at entry instead.
+  assert.equal(normalizePhone('0542889353'), '972542889353');
+  assert.equal(normalizePhone('054 288 9353'), '972542889353');
+  assert.equal(normalizePhone('+972-54-288-9353'), '972542889353');
+  assert.equal(normalizePhone('00972542889353'), '972542889353');
+  assert.equal(normalizePhone('972542889353'), '972542889353', 'already-international is untouched');
+  assert.equal(phoneToChatId(normalizePhone('0542889353')), '972542889353@c.us');
+  // Not phone numbers: refused at entry rather than stored and discovered later.
+  assert.equal(normalizePhone('123'), null);
+  assert.equal(normalizePhone(''), null);
+  assert.equal(normalizePhone(null), null);
 });
 
 test('A rejected recipient fails immediately instead of burning retries', async () => {

@@ -5,6 +5,7 @@ import { config, packageOf, CONTENT_TYPES, WEEKLY_ALLOWANCE } from './config.js'
 import { db, listAllClients, getClientByPhone, upsertClient, deleteClient, getUsage } from './db.js';
 import * as Q from './quota.js';
 import * as D from './deliveries.js';
+import { normalizePhone } from './greenapi.js';
 import { clientQuotaSummary, adjustmentResult } from './quota-balance.js';
 import { enforceExpiry } from './subscription.js';
 import { runDailyTick } from './daily.js';
@@ -206,8 +207,15 @@ export function createAdminApp(controls = {}) {
 
   app.post('/api/clients', (req, res) => {
     const b = req.body || {};
-    const phone = String(b.phone || '').replace(/\D/g, '');
-    if (!phone || !b.name || !b.business_name) {
+    // Normalised, not just stripped: a local number saved as-is looks fine in the
+    // panel and only fails hours later, at send time, as "invalid phone number".
+    const phone = normalizePhone(b.phone);
+    if (!phone) {
+      return res.status(400).json({
+        error: 'מספר ווטסאפ לא תקין. הזינו מספר עם קידומת מדינה, למשל 972542889353 או 0542889353',
+      });
+    }
+    if (!b.name || !b.business_name) {
       return res.status(400).json({ error: 'phone, name and business_name are required' });
     }
     // Date validation — format AND business sense.
