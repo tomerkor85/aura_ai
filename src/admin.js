@@ -98,6 +98,9 @@ export function createAdminApp(controls = {}) {
       // render the grid and show "used / allowed" without duplicating the rules.
       week: Q.clientSchedule(client),
       allowance: WEEKLY_ALLOWANCE[client.package] || WEEKLY_ALLOWANCE.basic,
+      // Every plan's ceiling, so the panel can re-cap the grid the moment the
+      // package dropdown changes instead of waiting for a failed save.
+      allowances: WEEKLY_ALLOWANCE,
       week_totals: Q.scheduleTotals(Q.clientSchedule(client)),
       cycles: quota.cycles,
       quota: { story: quota.story, carousel: quota.carousel, reel: quota.reel },
@@ -273,15 +276,25 @@ export function createAdminApp(controls = {}) {
           schedule[d][t] = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
         }
       }
-      const allowance = WEEKLY_ALLOWANCE[b.package || 'basic'] || WEEKLY_ALLOWANCE.basic;
+      const newPkg = b.package || 'basic';
+      const allowance = WEEKLY_ALLOWANCE[newPkg] || WEEKLY_ALLOWANCE.basic;
       const totals = Q.scheduleTotals(schedule);
       const label = { story: 'סטוריז', carousel: 'קרוסלות', reel: 'רילז' };
-      for (const t of CONTENT_TYPES) {
-        if (totals[t] > allowance[t]) {
-          return res.status(400).json({
-            error: `הלוח השבועי חורג מהמכסה: ${label[t]} ${totals[t]} מתוך ${allowance[t]} המותרים בחבילה`,
-          });
-        }
+      // Downgrading a plan necessarily leaves the old schedule over the new budget.
+      // Rejecting that would deadlock the change — the admin would have to hand-trim
+      // the grid before the package could be switched at all — so a package change
+      // trims instead, and only an over-budget edit WITHIN a plan is refused.
+      const downgraded = existing && existing.package !== newPkg;
+      const over = CONTENT_TYPES.filter((t) => totals[t] > allowance[t]);
+      if (over.length && !downgraded) {
+        const t = over[0];
+        return res.status(400).json({
+          error: `הלוח השבועי חורג מהמכסה: ${label[t]} ${totals[t]} מתוך ${allowance[t]} המותרים בחבילה`,
+        });
+      }
+      if (over.length) {
+        schedule = Q.clientSchedule({ ...existing, package: newPkg, schedule });
+        logger.info('admin', `${phone} moved to ${newPkg} — schedule trimmed to fit (${over.join(', ')})`);
       }
     }
 

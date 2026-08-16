@@ -68,6 +68,20 @@ test('6. A schedule over the package allowance is clamped, never granted', () =>
   assert.equal(onDay(greedy, '2026-07-22', 'carousel'), 0); // later ones dropped
 });
 
+test('6b. Downgrading a plan trims the schedule instead of deadlocking the change', () => {
+  // A premium week (2 carousels) moved to basic (1 allowed). Re-resolving under the
+  // new plan must yield a saveable schedule, not an error — otherwise the package
+  // could never be changed without hand-editing the grid first.
+  const premiumWeek = { 0: { carousel: 1, story: 4 }, 3: { carousel: 1, story: 4 } };
+  const asPremium = Q.clientSchedule({ ...premium, schedule: premiumWeek });
+  assert.equal(Q.scheduleTotals(asPremium).carousel, 2);
+
+  const asBasic = Q.clientSchedule({ ...basic, schedule: premiumWeek });
+  assert.equal(Q.scheduleTotals(asBasic).carousel, 1, 'trimmed to the basic ceiling');
+  assert.equal(onDay({ ...basic, schedule: asBasic }, '2026-07-19', 'carousel'), 1, 'Sunday kept');
+  assert.equal(onDay({ ...basic, schedule: asBasic }, '2026-07-22', 'carousel'), 0, 'Wednesday dropped');
+});
+
 test('7. Cycles are calendar weeks (Sunday-Saturday), not anchored to signup', () => {
   // basic registered on a Wednesday; its week still starts on the preceding Sunday.
   assert.equal(Q.cycleInfo(basic, '2026-07-15').weeklyStart, '2026-07-12');

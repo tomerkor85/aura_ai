@@ -274,9 +274,20 @@
     const TYPES = [['story', 'סטוריז'], ['carousel', 'קרוסלות'], ['reel', 'רילז']];
     let weekAllowance = {};
 
+    let weekAllowances = {};
+
+    // Re-cap the grid when the plan changes, so the admin sees the new ceiling (and
+    // any now-over rows in red) immediately rather than on a rejected save.
+    function onPackageChange() {
+      const pkg = $('f_package') && $('f_package').value;
+      if (weekAllowances[pkg]) weekAllowance = weekAllowances[pkg];
+      renderWeekTotals();
+    }
+
     function weekGrid(sc) {
       const week = (sc && sc.week) || {};
       weekAllowance = (sc && sc.allowance) || {};
+      weekAllowances = (sc && sc.allowances) || {};
       const cell = (d, k, v) => `<td style="padding:3px"><input type="number" min="0" max="99"
         id="w_${d}_${k}" value="${Number(v) || 0}" oninput="renderWeekTotals()"
         style="width:64px;text-align:center;padding:4px"></td>`;
@@ -301,7 +312,14 @@
         const over = max != null && sum > max;
         return `<span style="${over ? 'color:#e5484d;font-weight:600' : ''}">${label} ${sum}${max != null ? '/' + max : ''}</span>`;
       }).join(' · ');
-      el.innerHTML = `${parts} — סכום שבועי מול מכסת החבילה. אפשר לחלק פחות, לא יותר.`;
+      const over = TYPES.some(([k]) => {
+        let sum = 0;
+        for (let d = 0; d <= 6; d++) { const i = $(`w_${d}_${k}`); if (i) sum += Number(i.value) || 0; }
+        return weekAllowance[k] != null && sum > weekAllowance[k];
+      });
+      el.innerHTML = over
+        ? `${parts} — <b style="color:#e5484d">חורג מהמכסה.</b> שינוי חבילה יקצץ אוטומטית; עריכה באותה חבילה תיחסם.`
+        : `${parts} — סכום שבועי מול מכסת החבילה. אפשר לחלק פחות, לא יותר.`;
     }
 
     function readWeekGrid() {
@@ -515,7 +533,7 @@
         <div class="field"><label>טלפון ווטסאפ (ספרות בלבד, כולל קידומת מדינה)</label><input id="f_phone" value="${P(c.phone)}" placeholder="972501234567"></div>
         <div class="row">
           <div class="field"><label>חבילה</label>
-            <select id="f_package">
+            <select id="f_package" onchange="onPackageChange()">
               <option value="basic" ${c.package !== 'premium' ? 'selected' : ''}>בסיסית</option>
               <option value="premium" ${c.package === 'premium' ? 'selected' : ''}>מורחבת (כולל וידאו)</option>
             </select>
