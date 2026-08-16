@@ -8,16 +8,15 @@ const basic = { phone: 'b', package: 'basic', timezone: 'Asia/Jerusalem', regist
 const premium = { ...basic, phone: 'p', package: 'premium' };
 
 const storiesOf = (c, day) => Q.dueItems(c, day).filter((i) => i.content_type === 'story');
-const carouselsOverWeek = (c) => {
+const onDay = (c, day, type) => Q.dueItems(c, day).filter((i) => i.content_type === type).length;
+// A full calendar week starting Sunday 2026-07-19.
+const overWeek = (c, type) => {
   let total = 0;
-  for (let d = 0; d < 7; d++) total += Q.dueItems(c, Q.addDays('2026-07-15', d)).filter((i) => i.content_type === 'carousel').length;
+  for (let d = 0; d < 7; d++) total += onDay(c, Q.addDays('2026-07-19', d), type);
   return total;
 };
-const reelsOver14 = (c) => {
-  let total = 0;
-  for (let d = 0; d < 14; d++) total += Q.dueItems(c, Q.addDays('2026-07-15', d)).filter((i) => i.content_type === 'reel').length;
-  return total;
-};
+const carouselsOverWeek = (c) => overWeek(c, 'carousel');
+const reelsOverWeek = (c) => overWeek(c, 'reel');
 
 test('1. Basic plan yields 2 stories per day', () => {
   assert.equal(storiesOf(basic, '2026-07-15').length, 2);
@@ -29,39 +28,58 @@ test('2. Premium plan yields 4 stories per day', () => {
   assert.equal(storiesOf(premium, '2026-07-19').length, 4);
 });
 
-test('3. Basic: 1 carousel per weekly cycle, on cycle day 0', () => {
+test('3. Basic default: the weekly carousel and reel land on Sunday', () => {
   assert.equal(carouselsOverWeek(basic), 1);
-  assert.equal(Q.dueItems(basic, '2026-07-15').filter((i) => i.content_type === 'carousel').length, 1); // day 0
-  assert.equal(Q.dueItems(basic, '2026-07-18').filter((i) => i.content_type === 'carousel').length, 0); // day 3
+  assert.equal(reelsOverWeek(basic), 1);
+  assert.equal(onDay(basic, '2026-07-19', 'carousel'), 1); // Sunday
+  assert.equal(onDay(basic, '2026-07-22', 'carousel'), 0); // Wednesday
 });
 
-test('4. Premium: 2 carousels per weekly cycle, on cycle days 0 and 3', () => {
+test('4. Premium default: double the allowance, same Sunday placement', () => {
   assert.equal(carouselsOverWeek(premium), 2);
-  assert.equal(Q.dueItems(premium, '2026-07-15').filter((i) => i.content_type === 'carousel').length, 1); // day 0
-  assert.equal(Q.dueItems(premium, '2026-07-18').filter((i) => i.content_type === 'carousel').length, 1); // day 3
+  assert.equal(reelsOverWeek(premium), 2);
+  assert.equal(onDay(premium, '2026-07-19', 'carousel'), 2);
 });
 
-test('5. Basic: 1 reel per 14-day cycle, on cycle day 0', () => {
-  assert.equal(reelsOver14(basic), 1);
+test('5. A custom schedule places each type on the weekdays the client chose', () => {
+  // "carousel on Wednesday; 1 story Tuesday and 3 Thursday" — the panel's use case.
+  const custom = {
+    ...basic,
+    schedule: {
+      2: { story: 1 },
+      3: { carousel: 1 },
+      4: { story: 3 },
+    },
+  };
+  assert.equal(onDay(custom, '2026-07-21', 'story'), 1);    // Tuesday
+  assert.equal(onDay(custom, '2026-07-23', 'story'), 3);    // Thursday
+  assert.equal(onDay(custom, '2026-07-22', 'carousel'), 1); // Wednesday
+  assert.equal(onDay(custom, '2026-07-19', 'carousel'), 0); // Sunday: nothing now
+  assert.equal(onDay(custom, '2026-07-19', 'story'), 0);
+  assert.deepEqual(Q.scheduleTotals(Q.clientSchedule(custom)), { story: 4, carousel: 1, reel: 0 });
 });
 
-test('6. Premium: 2 reels per 14-day cycle, on cycle days 0 and 8', () => {
-  assert.equal(reelsOver14(premium), 2);
-  assert.equal(Q.dueItems(premium, '2026-07-22').filter((i) => i.content_type === 'reel').length, 1); // day 7 (0-indexed)
+test('6. A schedule over the package allowance is clamped, never granted', () => {
+  // 3 carousels a week on a plan that allows 1: the extras are dropped, earliest
+  // weekday first, so a stale row can never hand out more than the plan pays for.
+  const greedy = { ...basic, schedule: { 0: { carousel: 1 }, 3: { carousel: 1 }, 5: { carousel: 1 } } };
+  assert.equal(Q.scheduleTotals(Q.clientSchedule(greedy)).carousel, 1);
+  assert.equal(onDay(greedy, '2026-07-19', 'carousel'), 1); // Sunday kept
+  assert.equal(onDay(greedy, '2026-07-22', 'carousel'), 0); // later ones dropped
 });
 
-test('7. Cycles are anchored to the registration date, not the calendar week', () => {
-  assert.equal(Q.cycleInfo(basic, '2026-07-15').weeklyDay, 0);
-  assert.equal(Q.cycleInfo(basic, '2026-07-15').weeklyStart, '2026-07-15');
-  assert.equal(Q.cycleInfo(basic, '2026-07-18').weeklyDay, 3);
-  assert.equal(Q.cycleInfo(basic, '2026-07-18').weeklyStart, '2026-07-15');
-  // day 7 rolls into a new weekly cycle anchored to registration
-  assert.equal(Q.cycleInfo(basic, '2026-07-22').weeklyDay, 0);
-  assert.equal(Q.cycleInfo(basic, '2026-07-22').weeklyStart, '2026-07-22');
-  // 14-day reel cycle also anchored to registration: day 13 then a fresh cycle at day 14
-  assert.equal(Q.cycleInfo(basic, '2026-07-28').c14Day, 13);
-  assert.equal(Q.cycleInfo(basic, '2026-07-29').c14Day, 0);
-  assert.equal(Q.cycleInfo(basic, '2026-07-29').c14Start, '2026-07-29');
+test('7. Cycles are calendar weeks (Sunday-Saturday), not anchored to signup', () => {
+  // basic registered on a Wednesday; its week still starts on the preceding Sunday.
+  assert.equal(Q.cycleInfo(basic, '2026-07-15').weeklyStart, '2026-07-12');
+  assert.equal(Q.cycleInfo(basic, '2026-07-18').weeklyStart, '2026-07-12'); // Saturday, same week
+  assert.equal(Q.cycleInfo(basic, '2026-07-19').weeklyStart, '2026-07-19'); // Sunday, new week
+  assert.equal(Q.cycleInfo(basic, '2026-07-19').weeklyDay, 0);
+  assert.equal(Q.cycleInfo(basic, '2026-07-22').weeklyDay, 3);              // Wednesday
+  // Two clients who signed up on different days share the same week boundaries.
+  assert.equal(
+    Q.cycleInfo({ ...basic, registration_date: '2026-07-19T05:00:00Z' }, '2026-07-22').weeklyStart,
+    Q.cycleInfo(basic, '2026-07-22').weeklyStart,
+  );
 });
 
 test('included quota matches plan (Premium = 2x Basic)', () => {

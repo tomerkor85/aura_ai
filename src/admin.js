@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config, packageOf } from './config.js';
+import { config, packageOf, CONTENT_TYPES, WEEKLY_ALLOWANCE } from './config.js';
 import { db, listAllClients, getClientByPhone, upsertClient, deleteClient, getUsage } from './db.js';
 import * as Q from './quota.js';
 import * as D from './deliveries.js';
@@ -94,6 +94,11 @@ export function createAdminApp(controls = {}) {
       timezone: tz,
       status: client.status,
       scheduled_content_enabled: !!client.scheduled_content_enabled,
+      // Resolved weekly plan + the ceiling it is checked against, so the panel can
+      // render the grid and show "used / allowed" without duplicating the rules.
+      week: Q.clientSchedule(client),
+      allowance: WEEKLY_ALLOWANCE[client.package] || WEEKLY_ALLOWANCE.basic,
+      week_totals: Q.scheduleTotals(Q.clientSchedule(client)),
       cycles: quota.cycles,
       quota: { story: quota.story, carousel: quota.carousel, reel: quota.reel },
       next_delivery_at: Q.nextDeliveryAt(client, now),
@@ -252,6 +257,34 @@ export function createAdminApp(controls = {}) {
       try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }); }
       catch { return res.status(400).json({ error: 'אזור זמן לא תקין' }); }
     }
+    // Weekly plan: which weekdays get what. Rejected (not silently trimmed) when it
+    // exceeds the package allowance, so the panel can say which type is over.
+    let schedule = null;
+    if (b.schedule && typeof b.schedule === 'object') {
+      schedule = {};
+      for (let d = 0; d <= 6; d++) {
+        const day = b.schedule[d] || b.schedule[String(d)] || {};
+        schedule[d] = {};
+        for (const t of CONTENT_TYPES) {
+          const n = Number(day[t]);
+          if (day[t] != null && (!Number.isFinite(n) || n < 0)) {
+            return res.status(400).json({ error: 'כמות לא תקינה בלוח השבועי' });
+          }
+          schedule[d][t] = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+        }
+      }
+      const allowance = WEEKLY_ALLOWANCE[b.package || 'basic'] || WEEKLY_ALLOWANCE.basic;
+      const totals = Q.scheduleTotals(schedule);
+      const label = { story: 'סטוריז', carousel: 'קרוסלות', reel: 'רילז' };
+      for (const t of CONTENT_TYPES) {
+        if (totals[t] > allowance[t]) {
+          return res.status(400).json({
+            error: `הלוח השבועי חורג מהמכסה: ${label[t]} ${totals[t]} מתוך ${allowance[t]} המותרים בחבילה`,
+          });
+        }
+      }
+    }
+
     const registrationDate = b.registration_date ? parseDate(b.registration_date) : null;
     if (b.registration_date && !registrationDate) {
       return res.status(400).json({ error: 'תאריך רישום לא תקין' });
@@ -270,6 +303,7 @@ export function createAdminApp(controls = {}) {
       send_time: sendTime,
       timezone,
       scheduled_content_enabled: typeof b.scheduled_content_enabled === 'boolean' ? b.scheduled_content_enabled : undefined,
+      schedule,
     });
     if (reactivated) logger.info('admin', `new payment recorded for ${phone} — auto-reactivated`);
 

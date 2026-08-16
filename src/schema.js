@@ -84,6 +84,9 @@ export function applyScheduleSchema(db) {
     'ALTER TABLE clients ADD COLUMN registration_date TEXT',
     "ALTER TABLE clients ADD COLUMN send_time TEXT",
     'ALTER TABLE clients ADD COLUMN timezone TEXT',
+    // Per-client weekly plan: {"0".."6": {story, carousel, reel}}, 0 = Sunday.
+    // NULL means "use the package default spread" (see defaultSchedule).
+    'ALTER TABLE clients ADD COLUMN schedule TEXT',
   ]) {
     try { db.exec(ddl); } catch { /* column already exists */ }
   }

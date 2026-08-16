@@ -7,7 +7,7 @@ import { makeDb, addClient, getClient } from './helpers.mjs';
 // Registered local 2026-07-24 (08:00 Asia/Jerusalem); "now" the same morning.
 const REG = '2026-07-24T05:00:00Z';
 const NOW = new Date('2026-07-24T06:00:00Z');
-const CYCLE = '2026-07-24'; // weekly & 14-day cycle start for NOW
+const CYCLE = '2026-07-19'; // calendar week (Sun) containing NOW
 
 // Insert past successful deliveries directly (status='delivered').
 function deliver(db, phone, type, n, cycleStart = CYCLE) {
@@ -38,8 +38,8 @@ test('Basic customer balance (8 stories / 1 carousel / 1 reel)', () => {
   assert.match(msg, /\nקרוסלה אחת נותרה\n/);
   assert.match(msg, /\nריל אחד נותר\n/);
   assert.match(msg, /\nחבילה: בסיסית\n/);
-  assert.match(msg, /מחזור שבועי מסתיים: 30\/07\/2026/);
-  assert.match(msg, /מחזור הרילז מסתיים: 06\/08\/2026/);
+  assert.match(msg, /מחזור שבועי מסתיים: 25\/07\/2026/);
+  assert.match(msg, /מחזור הרילז מסתיים: 25\/07\/2026/);
 });
 
 test('Premium customer balance (חבילת פרימיום, doubled quotas)', () => {

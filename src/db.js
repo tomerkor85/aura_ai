@@ -137,15 +137,15 @@ export function deleteClient(phone) {
 
 export function upsertClient({
   phone, name, business_name, package: pkg, status, profile, paid_at, subscription_ends_at,
-  registration_date, send_time, timezone, scheduled_content_enabled,
+  registration_date, send_time, timezone, scheduled_content_enabled, schedule,
 }) {
   db.prepare(`
     INSERT INTO clients
       (phone, name, business_name, package, status, profile, paid_at, subscription_ends_at,
-       registration_date, send_time, timezone, scheduled_content_enabled)
+       registration_date, send_time, timezone, scheduled_content_enabled, schedule)
     VALUES (@phone, @name, @business_name, @pkg, @status, @profile, @paid_at, @ends_at,
             COALESCE(@reg, datetime('now')), COALESCE(@send, '07:30'), COALESCE(@tz, 'Asia/Jerusalem'),
-            COALESCE(@sce, 0))
+            COALESCE(@sce, 0), @schedule)
     ON CONFLICT(phone) DO UPDATE SET
       name = @name, business_name = @business_name, package = @pkg,
       status = @status, profile = @profile,
@@ -156,6 +156,7 @@ export function upsertClient({
       send_time = COALESCE(@send, clients.send_time),
       timezone = COALESCE(@tz, clients.timezone),
       scheduled_content_enabled = COALESCE(@sce, clients.scheduled_content_enabled),
+      schedule = COALESCE(@schedule, clients.schedule),
       -- On a status change, clear the "already notified" marker so the client
       -- gets the one-time notice for the NEW status (e.g. suspended -> canceled,
       -- or a second suspension after reactivation).
@@ -170,6 +171,7 @@ export function upsertClient({
     send: send_time || null,
     tz: timezone || null,
     sce: scheduled_content_enabled == null ? null : (scheduled_content_enabled ? 1 : 0),
+    schedule: schedule == null ? null : JSON.stringify(schedule),
   });
 }
 

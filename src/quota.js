@@ -4,7 +4,9 @@
 // survive restarts/deploys and never reset on calendar boundaries (Sun/1st/etc).
 // Every function takes an explicit `now`/date string, so tests inject a fake
 // clock and get deterministic results. No DB access, no side effects.
-import { scheduleQuotaOf, scheduleConfig, isValidHM } from './config.js';
+import {
+  scheduleConfig, isValidHM, CONTENT_TYPES, weeklyAllowanceOf, defaultSchedule,
+} from './config.js';
 
 const DAY_MS = 86_400_000;
 const pad = (n) => String(n).padStart(2, '0');
@@ -83,18 +85,27 @@ export function regLocalDate(client) {
   return localDateStr(d, tz);
 }
 
-// Cycle windows for a given local day, anchored to registration.
+// Weekday of a 'YYYY-MM-DD' local date. 0 = Sunday … 6 = Saturday, matching both
+// the Israeli week and the keys of a client's schedule.
+export function weekdayOf(dateStr) {
+  return new Date(ymdToUTC(dateStr)).getUTCDay();
+}
+
+// Cycle windows for a given local day.
+//
+// Cycles are CALENDAR weeks (Sunday–Saturday), not weeks counted from the signup
+// date. That is what lets a schedule say "carousel on Wednesday" and mean the same
+// day for every client. c14* are retained so existing callers keep working; they
+// now track the same calendar week as the weekly cycle.
 export function cycleInfo(client, todayStr) {
   const regStr = regLocalDate(client);
   const days = Math.max(0, daysBetween(regStr, todayStr));
-  const weeklyDay = days % 7;
-  const c14Day = days % 14;
+  const weeklyDay = weekdayOf(todayStr);
   const weeklyStart = addDays(todayStr, -weeklyDay);
-  const c14Start = addDays(todayStr, -c14Day);
   return {
-    regStr, days, weeklyDay, c14Day,
+    regStr, days, weeklyDay, c14Day: weeklyDay,
     weeklyStart, weeklyEnd: addDays(weeklyStart, 6),
-    c14Start, c14End: addDays(c14Start, 13),
+    c14Start: weeklyStart, c14End: addDays(weeklyStart, 6),
   };
 }
 
@@ -107,20 +118,65 @@ function mkItem(client, type, seq, cycleStart, dateStr) {
 }
 
 // The content items due for a client on a given local day (pure; no DB).
+// The client's weekly plan: { 0..6: { story, carousel, reel } }. Falls back to the
+// package default when unset, and is always clamped to the package allowance so a
+// stale row can never grant more than the plan pays for.
+export function clientSchedule(client) {
+  let raw = client.schedule;
+  if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch { raw = null; } }
+  const base = raw && typeof raw === 'object' ? raw : defaultSchedule(client);
+  const week = {};
+  for (let d = 0; d <= 6; d++) {
+    const day = base[d] || base[String(d)] || {};
+    week[d] = {};
+    for (const t of CONTENT_TYPES) {
+      const n = Number(day[t]);
+      week[d][t] = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    }
+  }
+  return clampToAllowance(week, weeklyAllowanceOf(client));
+}
+
+// Trim a week down to the allowance, earliest weekday first, so an over-budget
+// schedule degrades predictably instead of being rejected at delivery time.
+function clampToAllowance(week, allowance) {
+  for (const t of CONTENT_TYPES) {
+    let left = allowance[t] ?? 0;
+    for (let d = 0; d <= 6; d++) {
+      const take = Math.min(week[d][t], Math.max(0, left));
+      week[d][t] = take;
+      left -= take;
+    }
+  }
+  return week;
+}
+
+// Totals per content type for a week plan — used by the panel and by validation.
+export function scheduleTotals(week) {
+  const out = {};
+  for (const t of CONTENT_TYPES) {
+    out[t] = 0;
+    for (let d = 0; d <= 6; d++) out[t] += (week[d] && week[d][t]) || 0;
+  }
+  return out;
+}
+
 export function dueItems(client, todayStr) {
-  const q = scheduleQuotaOf(client);
   const ci = cycleInfo(client, todayStr);
+  const today = clientSchedule(client)[ci.weeklyDay];
   const items = [];
-  for (let s = 1; s <= q.storiesPerDay; s++) items.push(mkItem(client, 'story', s, ci.weeklyStart, todayStr));
-  q.carouselDays.forEach((day, i) => { if (ci.weeklyDay === day) items.push(mkItem(client, 'carousel', i + 1, ci.weeklyStart, todayStr)); });
-  q.reelDays.forEach((day, i) => { if (ci.c14Day === day) items.push(mkItem(client, 'reel', i + 1, ci.c14Start, todayStr)); });
+  for (const t of CONTENT_TYPES) {
+    for (let s = 1; s <= today[t]; s++) items.push(mkItem(client, t, s, ci.weeklyStart, todayStr));
+  }
   return items;
 }
 
-// Included quota per cycle: stories/carousels per weekly cycle, reels per 14-day cycle.
+// Included quota per calendar week — the package ALLOWANCE, i.e. what the client
+// paid for, not what their schedule happens to spend. A client who spreads only 4
+// of 14 stories across the week is still entitled to 14, so the balance stays
+// honest and any credit for a missed day has room to land.
 export function includedFor(client) {
-  const q = scheduleQuotaOf(client);
-  return { story: q.storiesPerDay * 7, carousel: q.carouselDays.length, reel: q.reelDays.length };
+  return { ...weeklyAllowanceOf(client) };
 }
 
 // remaining = included + admin adjustments − successfully delivered (this cycle).
@@ -146,10 +202,11 @@ export function quotaSummary(client, todayStr, delivered = {}, adjustments = {})
 // The window never wraps past local midnight: with send_time 23:00 and a 3h grace,
 // recovery stops at 23:59, because the following minute belongs to the next local
 // date and is scheduled as its own day.
+// Bounded by the local day, not by a fixed grace: an outage ending at 13:00 must
+// still deliver a 09:00 client's content. Sending on a day the client was not yet
+// eligible for is prevented by sealing that day at signup, not by this check.
 export function isSendDue(client, now) {
-  const cur = localMinutes(now, clientTz(client));
-  const send = parseHM(clientSendTime(client));
-  return cur >= send && cur < send + scheduleConfig.sendGraceMinutes;
+  return localMinutes(now, clientTz(client)) >= parseHM(clientSendTime(client));
 }
 
 // Has today's send moment already passed on the client's local clock? Used when a

@@ -98,18 +98,37 @@ export function packageOf(client) {
 
 // ============================================================================
 // Scheduled subscription content — a SEPARATE quota axis from the monthly
-// PACKAGES above (which govern on-demand conversational generation). These
-// drive the daily scheduler: how many stories/carousels/reels each plan gets
-// and on which cycle-days (0-indexed from the client's registration date).
-// Premium = exactly double Basic.
+// PACKAGES above (which govern on-demand conversational generation).
+//
+// This is the CEILING per calendar week, not a timetable: each client picks
+// which weekdays receive what, up to these totals (see clientSchedule() in
+// quota.js). Premium = exactly double Basic.
+//
+// Cycles are calendar weeks (Sunday–Saturday) in the client's timezone, so
+// "carousel on Wednesday" means the same thing for every client.
 // ============================================================================
-export const SCHEDULE_QUOTAS = {
-  basic: { storiesPerDay: 2, carouselDays: [0], reelDays: [0] },
-  premium: { storiesPerDay: 4, carouselDays: [0, 3], reelDays: [0, 7] },
+export const CONTENT_TYPES = ['story', 'carousel', 'reel'];
+
+export const WEEKLY_ALLOWANCE = {
+  basic: { story: 14, carousel: 1, reel: 1 },   // 2 stories/day
+  premium: { story: 28, carousel: 2, reel: 2 }, // 4 stories/day
 };
 
-export function scheduleQuotaOf(client) {
-  return SCHEDULE_QUOTAS[client.package] || SCHEDULE_QUOTAS.basic;
+export function weeklyAllowanceOf(client) {
+  return WEEKLY_ALLOWANCE[client.package] || WEEKLY_ALLOWANCE.basic;
+}
+
+// Default weekday spread, used when a client has no custom schedule. Mirrors the
+// previous behaviour as closely as a weekday model can: stories every day, and
+// the week's carousel/reel on Sunday (cycle day 0).
+export function defaultSchedule(client) {
+  const a = weeklyAllowanceOf(client);
+  const perDay = Math.floor(a.story / 7);
+  const week = {};
+  for (let d = 0; d <= 6; d++) week[d] = { story: perDay, carousel: 0, reel: 0 };
+  week[0].carousel = a.carousel;
+  week[0].reel = a.reel;
+  return week;
 }
 
 const intEnv = (name, def) => {
@@ -142,11 +161,10 @@ export const scheduleConfig = {
     whatsapp: intEnv('MAX_WHATSAPP_PER_DAY', 1000),
   },
   defaultSendTime: hmEnv('DEFAULT_SEND_TIME', '07:30'),
-  // How long after send_time a client still counts as due. Bounds the same-day
-  // catch-up: a service down at 07:30 recovers, but enabling a client at 23:00
-  // no longer fires that morning's batch. Set to 1440 for the old behaviour
-  // (due any time after send_time on the same local date).
-  sendGraceMinutes: intEnv('SEND_GRACE_MINUTES', 180),
+  // Recovery is bounded by the local DAY, not by a fixed grace: an outage that
+  // ends at 13:00 must still deliver a 09:00 client's content, because the client
+  // paid for it. Once the local date rolls over the day cannot be delivered
+  // late — it is credited back to the quota instead (see creditMissedDay).
   defaultTz: process.env.TZ_NAME || 'Asia/Jerusalem',
   // Scheduler tick: at least once per minute (clamped to <= 60s).
   tickMs: Math.min(60_000, intEnv('SCHEDULER_TICK_MS', 30_000)),

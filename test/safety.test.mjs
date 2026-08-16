@@ -6,15 +6,15 @@ import * as Q from '../src/quota.js';
 import * as D from '../src/deliveries.js';
 import { makeDb, addClient, makeHarness, makeFakes, drain, deferred, tick } from './helpers.mjs';
 
-const REG = '2026-07-15T05:00:00Z';
-const MORNING = ' 2026-07-15T06:00:00Z'.trim(); // 09:00 local, past 07:30
+const REG = '2026-07-19T05:00:00Z';
+const MORNING = ' 2026-07-19T06:00:00Z'.trim(); // 09:00 local, past 07:30
 const storyItem = (phone, seq) => ({
-  phone, content_type: 'story', cycle_start: '2026-07-15', scheduled_date: '2026-07-15',
-  sequence_number: seq, idempotency_key: `${phone}:story:2026-07-15:${seq}`,
+  phone, content_type: 'story', cycle_start: '2026-07-19', scheduled_date: '2026-07-19',
+  sequence_number: seq, idempotency_key: `${phone}:story:2026-07-19:${seq}`,
 });
 const carouselItem = (phone) => ({
-  phone, content_type: 'carousel', cycle_start: '2026-07-15', scheduled_date: '2026-07-15',
-  sequence_number: 1, idempotency_key: `${phone}:carousel:2026-07-15:1`,
+  phone, content_type: 'carousel', cycle_start: '2026-07-19', scheduled_date: '2026-07-19',
+  sequence_number: 1, idempotency_key: `${phone}:carousel:2026-07-19:1`,
 });
 const count = (db, sql) => db.prepare(`SELECT COUNT(*) c FROM content_deliveries ${sql}`).get().c;
 
@@ -45,15 +45,16 @@ test('An enabled client alongside a disabled one: only the enabled one is enqueu
   assert.equal(count(db, "WHERE phone='off'"), 0);
 });
 
-test('Send window opens at send_time and closes after the grace period', () => {
+test('Recovery is bounded by the local day, not by a fixed grace', () => {
   const db = makeDb();
-  const c = addClient(db, { phone: '1', registration_date: REG }); // 07:30 Asia/Jerusalem
+  const c = addClient(db, { phone: '1', registration_date: REG, send_time: '09:00' });
   const at = (utc) => Q.isSendDue(c, new Date(Date.parse(utc)));
-  assert.equal(at('2026-07-15T04:25:00Z'), false, '07:25 local — before the window opens');
-  assert.equal(at('2026-07-15T04:35:00Z'), true, '07:35 local — just inside');
-  assert.equal(at('2026-07-15T07:15:00Z'), true, '10:15 local — recovery after downtime');
-  assert.equal(at('2026-07-15T08:00:00Z'), false, '11:00 local — window closed');
-  assert.equal(at('2026-07-15T20:07:00Z'), false, '23:07 local — must not fire the morning batch');
+  assert.equal(at('2026-07-19T05:30:00Z'), false, '08:30 local — before the send time');
+  assert.equal(at('2026-07-19T06:05:00Z'), true, '09:05 local — on time');
+  // The case that matters: an outage from 09:00 to 13:00. The client paid for this
+  // day, so it must still go out rather than being dropped for being late.
+  assert.equal(at('2026-07-19T10:00:00Z'), true, '13:00 local — recovered after a 4h outage');
+  assert.equal(at('2026-07-19T20:45:00Z'), true, '23:45 local — still the same local day');
 });
 
 test('Client enabled after today\'s send time: the day is sealed and nothing is sent', async () => {
@@ -62,7 +63,7 @@ test('Client enabled after today\'s send time: the day is sealed and nothing is 
   const now = new Date(Date.parse(MORNING)); // 09:00 local — window open
   assert.equal(Q.isSendDue(c, now), true, 'precondition: without sealing this day would deliver');
 
-  const sealed = D.seedSkippedItems(db, Q.dueItems(c, '2026-07-15'));
+  const sealed = D.seedSkippedItems(db, Q.dueItems(c, '2026-07-19'));
   assert.ok(sealed > 0, 'signup seals the current day');
 
   const h = makeHarness(db, { clock: fakeClock(Date.parse(MORNING)) });
@@ -77,12 +78,12 @@ test('Client enabled after today\'s send time: the day is sealed and nothing is 
 test('Sealing one day does not block the next one', async () => {
   const db = makeDb();
   const c = addClient(db, { phone: '1', registration_date: REG });
-  D.seedSkippedItems(db, Q.dueItems(c, '2026-07-15'));
+  D.seedSkippedItems(db, Q.dueItems(c, '2026-07-19'));
   // Next local day, inside its window: delivery starts normally.
-  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-16T06:00:00Z')) });
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-20T06:00:00Z')) });
   h.scheduler.tick(); // the tick dispatches, so rows may already have left 'scheduled'
-  assert.ok(count(db, "WHERE scheduled_date='2026-07-16'") > 0, 'the next day enqueues normally');
-  assert.equal(count(db, "WHERE scheduled_date='2026-07-16' AND status='skipped'"), 0, 'and is not sealed');
+  assert.ok(count(db, "WHERE scheduled_date='2026-07-20'") > 0, 'the next day enqueues normally');
+  assert.equal(count(db, "WHERE scheduled_date='2026-07-20' AND status='skipped'"), 0, 'and is not sealed');
 });
 
 test('Partial carousel retries ONLY the missing slides (delivered slides never resent)', async () => {
@@ -111,14 +112,14 @@ test('Partial carousel retries ONLY the missing slides (delivered slides never r
   // slides 1,2 sent once each; slide 3 attempted twice (1 fail + 1 ok) = 4 total.
   // If slides 1,2 had been resent, this would be 6.
   assert.equal(visualCalls, 4, 'only the missing slide was retried');
-  const ci = Q.cycleInfo({ phone: '1', package: 'basic', registration_date: REG, timezone: 'Asia/Jerusalem' }, '2026-07-15');
+  const ci = Q.cycleInfo({ phone: '1', package: 'basic', registration_date: REG, timezone: 'Asia/Jerusalem' }, '2026-07-19');
   assert.equal(D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start).carousel, 1, 'carousel = one unit');
 });
 
 test('Crash during sending becomes unknown_delivery_state (manual review, never auto-resent)', () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });
-  const clock = fakeClock(Date.parse('2026-07-15T06:00:00Z'));
+  const clock = fakeClock(Date.parse('2026-07-19T06:00:00Z'));
   D.enqueueItems(db, [storyItem('1', 1)]);
   const item = D.claimNext(db, 'story', clock.now(), 10_000, 'w1');
   assert.equal(D.markSending(db, item.id, clock.now(), 10_000), true); // message physically sent, then crash
@@ -134,7 +135,7 @@ test('Crash during sending becomes unknown_delivery_state (manual review, never 
 test('Daily provider cap delays extra jobs without deleting them or consuming quota', async () => {
   const db = makeDb();
   const c = addClient(db, { phone: '1', registration_date: REG });
-  const clock = fakeClock(Date.parse('2026-07-15T06:00:00Z'));
+  const clock = fakeClock(Date.parse('2026-07-19T06:00:00Z'));
   const limiter = createProviderLimiter({ db, limits: { story: 1, carousel: 50, reel: 20, whatsapp: 1000 }, clock });
   const h = makeHarness(db, { clock, limiter });
   D.enqueueItems(db, [storyItem('1', 1), storyItem('1', 2), storyItem('1', 3)]);
@@ -143,11 +144,11 @@ test('Daily provider cap delays extra jobs without deleting them or consuming qu
   assert.equal(count(db, "WHERE status='delivered'"), 1, 'cap allows only 1 today');
   assert.equal(count(db, "WHERE status='scheduled'"), 2, 'the rest stay queued');
   assert.equal(count(db, ''), 3, 'nothing deleted');
-  const ci = Q.cycleInfo(c, '2026-07-15');
+  const ci = Q.cycleInfo(c, '2026-07-19');
   assert.equal(D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start).story, 1, 'quota only for the delivered one');
 
   // Next UTC day: cap resets, one more flows through (still capped at 1/day).
-  clock.set(Date.parse('2026-07-16T06:00:00Z'));
+  clock.set(Date.parse('2026-07-20T06:00:00Z'));
   await drain(db, h.queue, h.clock);
   assert.equal(count(db, "WHERE status='delivered'"), 2);
   assert.equal(count(db, "WHERE status='scheduled'"), 1);

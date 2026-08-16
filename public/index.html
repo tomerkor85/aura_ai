@@ -267,6 +267,53 @@
       });
     }
 
+    // --- weekly plan editor ---
+    // 7 rows (Sunday..Saturday) x 3 content types. The inputs carry the state, and
+    // saveClient() reads them back by id, so there is nothing to keep in sync.
+    const WEEKDAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+    const TYPES = [['story', 'סטוריז'], ['carousel', 'קרוסלות'], ['reel', 'רילז']];
+    let weekAllowance = {};
+
+    function weekGrid(sc) {
+      const week = (sc && sc.week) || {};
+      weekAllowance = (sc && sc.allowance) || {};
+      const cell = (d, k, v) => `<td style="padding:3px"><input type="number" min="0" max="99"
+        id="w_${d}_${k}" value="${Number(v) || 0}" oninput="renderWeekTotals()"
+        style="width:64px;text-align:center;padding:4px"></td>`;
+      const rows = WEEKDAYS.map((name, d) => {
+        const day = week[d] || week[String(d)] || {};
+        return `<tr><td style="padding:3px 8px">${name}</td>${TYPES.map(([k]) => cell(d, k, day[k])).join('')}</tr>`;
+      }).join('');
+      return `<table style="border-collapse:collapse;margin:6px 0">
+          <thead><tr><th style="padding:3px 8px;text-align:right">יום</th>
+          ${TYPES.map(([, l]) => `<th style="padding:3px 8px">${l}</th>`).join('')}</tr></thead>
+          <tbody>${rows}</tbody></table>
+        <div class="hint" id="wk_note"></div>`;
+    }
+
+    function renderWeekTotals() {
+      const el = $('wk_note');
+      if (!el) return;
+      const parts = TYPES.map(([k, label]) => {
+        let sum = 0;
+        for (let d = 0; d <= 6; d++) { const i = $(`w_${d}_${k}`); if (i) sum += Number(i.value) || 0; }
+        const max = weekAllowance[k];
+        const over = max != null && sum > max;
+        return `<span style="${over ? 'color:#e5484d;font-weight:600' : ''}">${label} ${sum}${max != null ? '/' + max : ''}</span>`;
+      }).join(' · ');
+      el.innerHTML = `${parts} — סכום שבועי מול מכסת החבילה. אפשר לחלק פחות, לא יותר.`;
+    }
+
+    function readWeekGrid() {
+      if (!$('w_0_story')) return undefined; // grid not rendered (e.g. new client form)
+      const week = {};
+      for (let d = 0; d <= 6; d++) {
+        week[d] = {};
+        for (const [k] of TYPES) week[d][k] = Number($(`w_${d}_${k}`).value) || 0;
+      }
+      return week;
+    }
+
     // --- editor ---
     const P = (v) => (v == null ? '' : v);
     function arr(v) { return Array.isArray(v) ? v.join('\n') : P(v); }
@@ -519,6 +566,10 @@
           </label>
           <div class="hint">כבוי כברירת מחדל. תוכן יישלח רק אם גם המתג הגלובלי דלוק, הלקוח פעיל, והתיבה הזו מסומנת.</div>
         </div>
+        <div class="field">
+          <label>לוח שבועי <span class="hint">(מה מקבל הלקוח בכל יום, עד גובה מכסת החבילה)</span></label>
+          ${sc ? weekGrid(sc) : '<div class="hint">הלוח ייפתח לעריכה אחרי שמירת הלקוח. עד אז חלה פריסת ברירת המחדל של החבילה: סטוריז בכל יום, קרוסלה וריל בראשון.</div>'}
+        </div>
       </fieldset>
 
       ${sc ? scheduleSection(sc) : ''}
@@ -556,6 +607,7 @@
         // Fetch the full detail (includes live schedule + quota) rather than the light list row.
         const c = await api('GET', '/clients/' + encodeURIComponent(phone));
         $('editor').innerHTML = editorTemplate(c);
+        renderWeekTotals();
       } catch (e) {
         const fallback = clients.find((x) => x.phone === phone);
         if (fallback) $('editor').innerHTML = editorTemplate(fallback);
@@ -591,6 +643,7 @@
         send_time: val('f_send_time') || null,
         timezone: val('f_tz') || null,
         scheduled_content_enabled: $('f_sce') ? $('f_sce').checked : false,
+        schedule: readWeekGrid(),
         profile: {
           about: val('p_about'),
           audience: val('p_audience'),

@@ -5,10 +5,10 @@ import * as Q from '../src/quota.js';
 import * as D from '../src/deliveries.js';
 import { makeDb, addClient, makeHarness, makeFakes, drain, deferred, tick } from './helpers.mjs';
 
-const REG = '2026-07-15T05:00:00Z'; // 08:00 local Asia/Jerusalem
+const REG = '2026-07-19T05:00:00Z'; // 08:00 local Asia/Jerusalem
 const storyItem = (phone, seq) => ({
-  phone, content_type: 'story', cycle_start: '2026-07-15', scheduled_date: '2026-07-15',
-  sequence_number: seq, idempotency_key: `${phone}:story:2026-07-15:${seq}`,
+  phone, content_type: 'story', cycle_start: '2026-07-19', scheduled_date: '2026-07-19',
+  sequence_number: seq, idempotency_key: `${phone}:story:2026-07-19:${seq}`,
 });
 
 // Advance the fake clock through backoff windows until every job is terminal.
@@ -27,9 +27,9 @@ test('11. Successful delivery consumes exactly one quota unit; carousel counts o
   const db = makeDb();
   const c = addClient(db, { phone: '1', package: 'basic', registration_date: REG });
   const h = makeHarness(db);
-  D.enqueueItems(db, Q.dueItems(c, '2026-07-15')); // 2 stories + 1 carousel(3 slides) + 1 reel
+  D.enqueueItems(db, Q.dueItems(c, '2026-07-19')); // 2 stories + 1 carousel(3 slides) + 1 reel
   await drain(db, h.queue, h.clock);
-  const ci = Q.cycleInfo(c, '2026-07-15');
+  const ci = Q.cycleInfo(c, '2026-07-19');
   assert.deepEqual(D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start), { story: 2, carousel: 1, reel: 1 });
 });
 
@@ -37,14 +37,14 @@ test('8. Deployment/restart does not reset quota or cycles', async () => {
   const db = makeDb();
   const c = addClient(db, { phone: '1', registration_date: REG });
   const h1 = makeHarness(db);
-  D.enqueueItems(db, Q.dueItems(c, '2026-07-15').filter((i) => i.content_type === 'story'));
+  D.enqueueItems(db, Q.dueItems(c, '2026-07-19').filter((i) => i.content_type === 'story'));
   await drain(db, h1.queue, h1.clock);
-  const ci = Q.cycleInfo(c, '2026-07-15');
+  const ci = Q.cycleInfo(c, '2026-07-19');
   const before = D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start);
   assert.equal(before.story, 2);
   // "restart": brand-new harness over the SAME persisted DB
   makeHarness(db);
-  const ci2 = Q.cycleInfo(c, '2026-07-15');
+  const ci2 = Q.cycleInfo(c, '2026-07-19');
   assert.deepEqual(ci2, ci, 'cycles derive from registration_date and do not shift on restart');
   assert.deepEqual(D.deliveredCounts(db, '1', ci2.weeklyStart, ci2.c14Start), before, 'used quota persists across restart');
 });
@@ -54,13 +54,13 @@ test('9. Restart does not cause duplicate delivery', async () => {
   const c = addClient(db, { phone: '1', registration_date: REG });
   const fakes = makeFakes();
   const h1 = makeHarness(db, { fakes });
-  D.enqueueItems(db, Q.dueItems(c, '2026-07-15'));
+  D.enqueueItems(db, Q.dueItems(c, '2026-07-19'));
   await drain(db, h1.queue, h1.clock);
   const sends1 = fakes.sendLog.length;
   assert.ok(sends1 > 0);
   // restart: re-enqueue the same day (idempotent) + drain — must not re-send anything
   const h2 = makeHarness(db, { fakes });
-  D.enqueueItems(db, Q.dueItems(c, '2026-07-15'));
+  D.enqueueItems(db, Q.dueItems(c, '2026-07-19'));
   await drain(db, h2.queue, h2.clock);
   assert.equal(fakes.sendLog.length, sends1, 'delivered items are never regenerated/resent');
 });
@@ -76,7 +76,7 @@ test('10. Failed WhatsApp delivery does not consume quota', async () => {
   const h = makeHarness(db, { fakes: makeFakes({ senders }), config: { maxRetries: 1, backoffBaseMs: 1 } });
   D.enqueueItems(db, [storyItem('1', 1)]);
   await runToCompletion(db, h);
-  const ci = Q.cycleInfo(c, '2026-07-15');
+  const ci = Q.cycleInfo(c, '2026-07-19');
   assert.equal(D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start).story, 0, 'no quota consumed on failure');
   assert.equal(db.prepare("SELECT status FROM content_deliveries WHERE content_type='story'").get().status, 'failed');
 });
@@ -90,7 +90,7 @@ test('Generation success but delivery failure still consumes no quota', async ()
   const h = makeHarness(db, { fakes: makeFakes({ ...generators, senders }), config: { maxRetries: 1, backoffBaseMs: 1 } });
   D.enqueueItems(db, [storyItem('1', 1)]);
   await runToCompletion(db, h);
-  const ci = Q.cycleInfo(c, '2026-07-15');
+  const ci = Q.cycleInfo(c, '2026-07-19');
   assert.ok(generated >= 1, 'generation happened');
   assert.equal(D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start).story, 0, 'delivery failed => no quota');
 });
@@ -98,8 +98,8 @@ test('Generation success but delivery failure still consumes no quota', async ()
 test('12. Admin adjustment increases remaining quota', () => {
   const db = makeDb();
   const c = addClient(db, { phone: '1', registration_date: REG });
-  const ci = Q.cycleInfo(c, '2026-07-15');
-  const rem = () => Q.quotaSummary(c, '2026-07-15',
+  const ci = Q.cycleInfo(c, '2026-07-19');
+  const rem = () => Q.quotaSummary(c, '2026-07-19',
     D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start),
     D.adjustmentTotals(db, '1', ci.weeklyStart, ci.c14Start)).story.remaining;
   const before = rem();
@@ -110,7 +110,7 @@ test('12. Admin adjustment increases remaining quota', () => {
 test('13. Admin adjustment persists across restart', () => {
   const db = makeDb();
   const c = addClient(db, { phone: '1', registration_date: REG });
-  const ci = Q.cycleInfo(c, '2026-07-15');
+  const ci = Q.cycleInfo(c, '2026-07-19');
   D.addAdjustment(db, { phone: '1', content_type: 'carousel', cycle_start: ci.weeklyStart, delta: 1, reason: 'x' });
   makeHarness(db); // restart
   assert.equal(D.adjustmentTotals(db, '1', ci.weeklyStart, ci.c14Start).carousel, 1);
@@ -120,7 +120,7 @@ test('13. Admin adjustment persists across restart', () => {
 test('14. Suspended (paused) clients receive nothing', async () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG, status: 'suspended' });
-  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-15T06:00:00Z')) }); // 09:00 local
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-19T06:00:00Z')) }); // 09:00 local
   h.scheduler.tick();
   await drain(db, h.queue, h.clock);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM content_deliveries').get().c, 0);
@@ -130,31 +130,31 @@ test('15. Changing send time affects only future scheduling; quota/usage preserv
   const db = makeDb();
   const c = addClient(db, { phone: '1', registration_date: REG, send_time: '07:30' });
   // 07:00 local — before send time — nothing enqueued
-  const h1 = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-15T04:00:00Z')) });
+  const h1 = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-19T04:00:00Z')) });
   h1.scheduler.tick();
   await drain(db, h1.queue, h1.clock);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM content_deliveries').get().c, 0);
   // deliver a story, then move send time — delivered quota must remain
   D.enqueueItems(db, [storyItem('1', 1)]);
   await drain(db, h1.queue, h1.clock);
-  const ci = Q.cycleInfo(c, '2026-07-15');
+  const ci = Q.cycleInfo(c, '2026-07-19');
   assert.equal(D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start).story, 1);
   db.prepare("UPDATE clients SET send_time='23:00' WHERE phone='1'").run();
   assert.equal(D.deliveredCounts(db, '1', ci.weeklyStart, ci.c14Start).story, 1, 'usage untouched by send-time change');
-  assert.equal(Q.isSendDue({ ...c, send_time: '23:00' }, new Date('2026-07-16T06:00:00Z')), false); // 09:00 local < 23:00
+  assert.equal(Q.isSendDue({ ...c, send_time: '23:00' }, new Date('2026-07-20T06:00:00Z')), false); // 09:00 local < 23:00
 });
 
 test('18. Current-day missed delivery is recovered; older days marked missed only', async () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });
-  // App was down at 07:30; first tick runs 2026-07-16 09:00 local (06:00 UTC).
-  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-16T06:00:00Z')) });
+  // App was down at 07:30; first tick runs 2026-07-20 09:00 local (06:00 UTC).
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-20T06:00:00Z')) });
   h.scheduler.tick();
   await drain(db, h.queue, h.clock);
-  const delToday = db.prepare("SELECT COUNT(*) c FROM content_deliveries WHERE scheduled_date='2026-07-16' AND status='delivered'").get().c;
+  const delToday = db.prepare("SELECT COUNT(*) c FROM content_deliveries WHERE scheduled_date='2026-07-20' AND status='delivered'").get().c;
   assert.ok(delToday >= 2, 'current day recovered');
-  const yMissed = db.prepare("SELECT COUNT(*) c FROM content_deliveries WHERE scheduled_date='2026-07-15' AND status='missed'").get().c;
-  const yDelivered = db.prepare("SELECT COUNT(*) c FROM content_deliveries WHERE scheduled_date='2026-07-15' AND status='delivered'").get().c;
+  const yMissed = db.prepare("SELECT COUNT(*) c FROM content_deliveries WHERE scheduled_date='2026-07-19' AND status='missed'").get().c;
+  const yDelivered = db.prepare("SELECT COUNT(*) c FROM content_deliveries WHERE scheduled_date='2026-07-19' AND status='delivered'").get().c;
   assert.ok(yMissed >= 2, 'previous day recorded as missed');
   assert.equal(yDelivered, 0, 'previous day never auto-sent');
 });
@@ -162,7 +162,7 @@ test('18. Current-day missed delivery is recovered; older days marked missed onl
 test('Exactly-once: a crash during send is never resent (at-most-once)', () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });
-  const clock = fakeClock(Date.parse('2026-07-15T06:00:00Z'));
+  const clock = fakeClock(Date.parse('2026-07-19T06:00:00Z'));
   D.enqueueItems(db, [storyItem('1', 1)]);
   const item = D.claimNext(db, 'story', clock.now(), 10_000, 'w1');
   assert.ok(item);
@@ -203,7 +203,7 @@ test('A slow reel does not block story delivery (per-type isolation)', async () 
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });
   D.enqueueItems(db, [
-    { phone: '1', content_type: 'reel', cycle_start: '2026-07-15', scheduled_date: '2026-07-15', sequence_number: 1, idempotency_key: '1:reel:2026-07-15:1' },
+    { phone: '1', content_type: 'reel', cycle_start: '2026-07-19', scheduled_date: '2026-07-19', sequence_number: 1, idempotency_key: '1:reel:2026-07-19:1' },
     ...Array.from({ length: 3 }, (_, i) => storyItem('1', i + 1)),
   ]);
   const reelGate = deferred();
