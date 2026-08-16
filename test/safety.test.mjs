@@ -86,6 +86,50 @@ test('Sealing one day does not block the next one', async () => {
   assert.equal(count(db, "WHERE scheduled_date='2026-07-20' AND status='skipped'"), 0, 'and is not sealed');
 });
 
+test('A day lost to an outage is credited back and the client is told', () => {
+  const db = makeDb();
+  // Registered Sunday; the service is down all of Sunday and returns Monday morning.
+  const c = addClient(db, { phone: '1', registration_date: REG });
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-20T06:00:00Z')) });
+  h.scheduler.tick();
+
+  // Sunday's items can no longer be sent — the slot is gone.
+  assert.equal(count(db, "WHERE scheduled_date='2026-07-19' AND status='missed'"), 4);
+
+  // …but the entitlement comes back as an additive, audited credit.
+  const adj = db.prepare(
+    "SELECT content_type, SUM(delta) d FROM quota_adjustments WHERE phone='1' AND created_by='system' GROUP BY content_type",
+  ).all();
+  const credited = Object.fromEntries(adj.map((r) => [r.content_type, r.d]));
+  assert.deepEqual(credited, { story: 2, carousel: 1, reel: 1 });
+
+  assert.equal(h.missedNotices.length, 1, 'the client is notified once');
+  assert.deepEqual(h.missedNotices[0].credited, { story: 2, carousel: 1, reel: 1 });
+});
+
+test('Repeated ticks never credit the same lost day twice', () => {
+  const db = makeDb();
+  addClient(db, { phone: '1', registration_date: REG });
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-20T06:00:00Z')) });
+  h.scheduler.tick();
+  h.scheduler.tick();
+  h.scheduler.tick();
+  const total = db.prepare("SELECT COALESCE(SUM(delta),0) d FROM quota_adjustments WHERE phone='1'").get().d;
+  assert.equal(total, 4, 'one credit per lost item, regardless of tick count');
+  assert.equal(h.missedNotices.length, 1, 'and exactly one notice');
+});
+
+test('A day sealed at signup is never credited — it was never owed', () => {
+  const db = makeDb();
+  const c = addClient(db, { phone: '1', registration_date: REG });
+  D.seedSkippedItems(db, Q.dueItems(c, '2026-07-19')); // signed up mid-day Sunday
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-20T06:00:00Z')) });
+  h.scheduler.tick();
+  assert.equal(count(db, "WHERE scheduled_date='2026-07-19' AND status='missed'"), 0);
+  assert.equal(db.prepare("SELECT COALESCE(SUM(delta),0) d FROM quota_adjustments WHERE phone='1'").get().d, 0);
+  assert.equal(h.missedNotices.length, 0, 'and no apology for content that was never due');
+});
+
 test('Partial carousel retries ONLY the missing slides (delivered slides never resent)', async () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });

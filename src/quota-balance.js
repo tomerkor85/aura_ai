@@ -52,6 +52,32 @@ function statusLines(client, now) {
 
 // Build the customer balance message from a client + a quotaSummary (as returned
 // by clientQuotaSummary / Q.quotaSummary). Pure — no DB, no side effects.
+// "2 סטוריז ו-קרוסלה אחת" — used to tell a client what a lost day credited back.
+const creditPhrase = (n, one, many) => (n === 1 ? one : `${n} ${many}`);
+export function buildMissedDayMessage(client, credited) {
+  const parts = [];
+  if (credited.story) parts.push(creditPhrase(credited.story, 'סטורי אחד', 'סטוריז'));
+  if (credited.carousel) parts.push(creditPhrase(credited.carousel, 'קרוסלה אחת', 'קרוסלות'));
+  if (credited.reel) parts.push(creditPhrase(credited.reel, 'ריל אחד', 'רילז'));
+  if (!parts.length) return null;
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} ו${parts.at(-1)}`;
+  // 'ב-' takes a hyphen only before a numeral ('ב-2 סטוריז'); before a word it is
+  // prefixed directly ('בסטורי אחד'). Agreement follows the total, not the list.
+  const prefix = /^\d/.test(list) ? 'ב-' : 'ב';
+  const total = (credited.story || 0) + (credited.carousel || 0) + (credited.reel || 0);
+  // A lone carousel is feminine (קרוסלה אחת שנוספה); story and reel are masculine.
+  const loneFeminine = total === 1 && credited.carousel === 1;
+  const added = total > 1 ? 'שנוספו' : (loneFeminine ? 'שנוספה' : 'שנוסף');
+  const ask = total > 1 ? 'אותם' : (loneFeminine ? 'אותה' : 'אותו');
+  return [
+    `היי ${client.name}, בגלל תקלה טכנית אצלנו התוכן שלך מאתמול לא נשלח.`,
+    '',
+    `זיכינו אותך ${prefix}${list} ${added} ליתרה שלך — אפשר לבקש ${ask} בכל רגע.`,
+    '',
+    'מצטערים על אי הנוחות.',
+  ].join('\n');
+}
+
 export function buildQuotaBalanceMessage(client, quota, now = new Date()) {
   const lines = [
     'יתרת התוכן שלך:',

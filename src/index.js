@@ -12,6 +12,7 @@ import { createProviderLimiter } from './limiter.js';
 import { makeProcessItem } from './content-delivery.js';
 import { createScheduler } from './scheduler.js';
 import { getSetting, setSetting } from './deliveries.js';
+import { buildMissedDayMessage } from './quota-balance.js';
 import { balanceReplyFor } from './quota-balance.js';
 import { logger, snip } from './logger.js';
 
@@ -54,6 +55,12 @@ const processItem = makeProcessItem({
 const deliveryQueue = createQueue({ db, config: scheduleConfig, clock: realClock, logger, processItem, isEnabled: isSchedulingActive, limiter });
 const scheduler = createScheduler({
   db, queue: deliveryQueue, clock: realClock, config: scheduleConfig, logger, listActiveClients, isSchedulingActive,
+  // A day lost to an outage is credited back automatically; tell the client so the
+  // silence is explained rather than noticed.
+  onMissedDay: async (client, credited) => {
+    const msg = buildMissedDayMessage(client, credited);
+    if (msg) await sendText(client.phone, msg);
+  },
 });
 
 // Controls surfaced to the admin panel (global pause/resume + queue health).

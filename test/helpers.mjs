@@ -121,8 +121,14 @@ export function makeHarness(db, opts = {}) {
     genTimeoutMs: config.itemTimeoutMs,
   });
   const queue = createQueue({ db, config, clock, logger: silentLogger, processItem, isEnabled, limiter });
-  const scheduler = createScheduler({ db, queue, clock, config, logger: silentLogger, listActiveClients: () => listActive(db), isSchedulingActive });
-  return { clock, config, queue, scheduler, fakes, limiter };
+  // Records every lost-day notice so tests can assert on them without WhatsApp.
+  const missedNotices = [];
+  const scheduler = createScheduler({
+    db, queue, clock, config, logger: silentLogger,
+    listActiveClients: () => listActive(db), isSchedulingActive,
+    onMissedDay: (client, credited) => { missedNotices.push({ phone: client.phone, credited }); },
+  });
+  return { clock, config, queue, scheduler, fakes, limiter, missedNotices };
 }
 
 const settle = () => new Promise((r) => setImmediate(r));

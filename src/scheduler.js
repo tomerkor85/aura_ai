@@ -8,9 +8,16 @@
 // the next tick). Yesterday's never-delivered items are recorded as 'missed' for
 // visibility only — never processed, never consume quota. Older days are ignored.
 import * as Q from './quota.js';
-import { enqueueItems, markMissedItems } from './deliveries.js';
+import { enqueueItems, markMissedItems, creditMissedItems } from './deliveries.js';
 
-export function createScheduler({ db, queue, clock, config, logger, listActiveClients, isSchedulingActive = () => true }) {
+export function createScheduler({
+  db, queue, clock, config, logger, listActiveClients,
+  isSchedulingActive = () => true,
+  // Called with (client, credited) after a lost day is credited back. Injected so
+  // tests can assert on it without touching WhatsApp; a failure here must never
+  // roll back the credit, which is already committed.
+  onMissedDay = null,
+}) {
   let timer = null;
 
   function runTick() {
@@ -41,10 +48,20 @@ export function createScheduler({ db, queue, clock, config, logger, listActiveCl
       if (Q.daysBetween(regStr, todayStr) >= 0 && Q.isSendDue(client, now)) {
         enqueued += enqueueItems(db, Q.dueItems(client, todayStr));
       }
-      // Yesterday (bounded): mark never-delivered items as 'missed' for visibility.
+      // Yesterday: whatever was never delivered can no longer be sent — the slot is
+      // gone. Record it, credit the entitlement back, and tell the client why.
       const yStr = Q.addDays(todayStr, -1);
       if (Q.daysBetween(regStr, yStr) >= 0) {
-        missed += markMissedItems(db, Q.dueItems(client, yStr));
+        const lost = markMissedItems(db, Q.dueItems(client, yStr));
+        if (lost.length) {
+          missed += lost.length;
+          const credited = creditMissedItems(db, client.phone, lost);
+          logger.info('sched', `${client.phone} lost ${yStr} — credited ${JSON.stringify(credited)}`);
+          if (onMissedDay) {
+            Promise.resolve(onMissedDay(client, credited))
+              .catch((err) => logger.error('sched', `missed-day notice failed for ${client.phone}`, err));
+          }
+        }
       }
     }
 
