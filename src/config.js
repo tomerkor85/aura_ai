@@ -5,6 +5,13 @@ export const config = {
   greenApi: {
     idInstance: process.env.GREEN_API_ID_INSTANCE || '',
     token: process.env.GREEN_API_TOKEN || '',
+    baseUrl: (process.env.GREEN_API_BASE_URL || 'https://api.green-api.com').replace(/\/$/, ''),
+    // Uploads (sendFileByUpload) go to the MEDIA host, not the API host. Posting
+    // them to api.green-api.com answers 500 "Internal server error" with nothing
+    // to indicate the host is the problem.
+    mediaUrl: (process.env.GREEN_API_MEDIA_URL
+      || (process.env.GREEN_API_BASE_URL || 'https://api.green-api.com').replace('//api.', '//media.')
+    ).replace(/\/$/, ''),
   },
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
   claudeModel: process.env.CLAUDE_MODEL || 'claude-opus-4-8',

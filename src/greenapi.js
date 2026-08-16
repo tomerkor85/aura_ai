@@ -1,10 +1,8 @@
 import { config } from './config.js';
 
-const BASE = 'https://api.green-api.com';
-
-function url(method) {
-  const { idInstance, token } = config.greenApi;
-  return `${BASE}/waInstance${idInstance}/${method}/${token}`;
+function url(method, { media = false } = {}) {
+  const { idInstance, token, baseUrl, mediaUrl } = config.greenApi;
+  return `${media ? mediaUrl : baseUrl}/waInstance${idInstance}/${method}/${token}`;
 }
 
 async function post(method, body) {
@@ -65,7 +63,10 @@ export async function sendImageBase64(phone, base64Data, { fileName = 'aura.png'
   form.append('caption', caption);
   form.append('file', new Blob([buffer], { type: 'image/png' }), fileName);
 
-  const res = await fetch(url('sendFileByUpload'), { method: 'POST', body: form, signal: AbortSignal.timeout(60_000) });
+  // NOTE: media host, not the API host — see config.greenApi.mediaUrl.
+  const res = await fetch(url('sendFileByUpload', { media: true }), {
+    method: 'POST', body: form, signal: AbortSignal.timeout(60_000),
+  });
   if (!res.ok) {
     throw new Error(`Green API sendFileByUpload failed: ${res.status} ${await res.text()}`);
   }
