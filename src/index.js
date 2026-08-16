@@ -13,6 +13,7 @@ import { makeProcessItem } from './content-delivery.js';
 import { createScheduler } from './scheduler.js';
 import { getSetting, setSetting } from './deliveries.js';
 import { buildMissedDayMessage } from './quota-balance.js';
+import { sweepOrphans } from './media-cache.js';
 import { balanceReplyFor } from './quota-balance.js';
 import { logger, snip } from './logger.js';
 
@@ -208,6 +209,9 @@ setInterval(sweepExpiredSubscriptions, EXPIRY_SWEEP_MS);
 // Automatic customer-DB backups: a fresh snapshot ~30s after boot, then daily,
 // written to <DATA_DIR>/backups on the persistent Volume (see src/backup.js).
 scheduleBackups();
+// Clear assets orphaned by a crash between generation and a terminal state, so the
+// cache that saves the regeneration cost cannot grow on the volume forever.
+sweepOrphans();
 
 // Start the scheduled-content loop (queue + workers were built above). It stays
 // idle until SCHEDULED_CONTENT_ENABLED=true, not paused, and a client opts in.

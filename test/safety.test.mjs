@@ -130,6 +130,59 @@ test('A day sealed at signup is never credited — it was never owed', () => {
   assert.equal(h.missedNotices.length, 0, 'and no apology for content that was never due');
 });
 
+test('A failed send retries the send, never the paid generation', async () => {
+  const db = makeDb();
+  addClient(db, { phone: '1', registration_date: REG });
+  let generated = 0;
+  let sends = 0;
+  const fakes = makeFakes({
+    story: async () => { generated++; return { image: { type: 'base64', data: 'paid-asset' }, caption: 'c' }; },
+    senders: {
+      sendText: async () => ({ idMessage: 't' }),
+      // Exactly the production failure: the image is bought, then WhatsApp 500s.
+      sendVisual: async () => { sends++; if (sends === 1) throw new Error('Green API 500'); return { idMessage: 'v' }; },
+      sendFileByUrl: async () => ({ idMessage: 'f' }),
+    },
+  });
+  const h = makeHarness(db, { fakes, config: { maxRetries: 3, backoffBaseMs: 1 } });
+  D.enqueueItems(db, [storyItem('1', 1)]);
+
+  await drain(db, h.queue, h.clock);
+  h.clock.advance(5); // pass the backoff
+  await drain(db, h.queue, h.clock);
+
+  const row = db.prepare("SELECT status FROM content_deliveries WHERE content_type='story'").get();
+  assert.equal(row.status, 'delivered');
+  assert.equal(sends, 2, 'the send was retried');
+  assert.equal(generated, 1, 'the image was generated — and paid for — exactly once');
+  assert.equal(h.media.files.size, 0, 'the cached asset is dropped once delivered');
+});
+
+test('Carousel slides already rendered are not re-rendered on retry', async () => {
+  const db = makeDb();
+  addClient(db, { phone: '1', registration_date: REG });
+  let rendered = 0;
+  let visualCalls = 0;
+  const fakes = makeFakes({
+    renderImage: async (prompt) => { rendered++; return { image: { type: 'base64', data: `img:${prompt}` } }; },
+    senders: {
+      sendText: async () => ({ idMessage: 't' }),
+      sendVisual: async () => { visualCalls++; if (visualCalls === 3) throw new Error('Green API 500'); return { idMessage: 'v' }; },
+      sendFileByUrl: async () => ({ idMessage: 'f' }),
+    },
+  });
+  const h = makeHarness(db, { fakes, config: { maxRetries: 3, backoffBaseMs: 1 } });
+  D.enqueueItems(db, [carouselItem('1')]);
+
+  await drain(db, h.queue, h.clock);
+  h.clock.advance(5);
+  await drain(db, h.queue, h.clock);
+
+  assert.equal(db.prepare("SELECT status FROM content_deliveries WHERE content_type='carousel'").get().status, 'delivered');
+  // 3 slides in the fake plan. Without the cache the retry re-renders slide 3.
+  assert.equal(rendered, 3, 'every slide is rendered — and paid for — exactly once');
+});
+
 test('Partial carousel retries ONLY the missing slides (delivered slides never resent)', async () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });

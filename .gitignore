@@ -5,4 +5,5 @@ aura.db-journal
 aura.db-wal
 aura.db-shm
 backups/
+media/
 *.log

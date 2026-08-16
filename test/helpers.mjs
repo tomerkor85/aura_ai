@@ -95,6 +95,19 @@ export function makeFakes(overrides = {}) {
   return { generators, renderImage, senders, sendLog };
 }
 
+// In-memory stand-in for the media cache, so tests exercise the generate-once
+// reuse path without writing generated assets to disk.
+export function makeMediaStub() {
+  const files = new Map();
+  return {
+    files,
+    saveImage: (id, tag, b64) => { const n = `${id}-${tag}`; files.set(n, b64); return n; },
+    loadImage: (n) => (files.has(n) ? files.get(n) : null),
+    dropItemMedia: (id) => { for (const k of [...files.keys()]) if (k.startsWith(`${id}-`)) files.delete(k); },
+    sweepOrphans: () => 0,
+  };
+}
+
 export function makeHarness(db, opts = {}) {
   const clock = opts.clock || fakeClock(Date.parse('2026-07-15T05:00:00Z'));
   const config = { ...testConfig, ...(opts.config || {}) };
@@ -110,7 +123,9 @@ export function makeHarness(db, opts = {}) {
     limiter.recordSend();
     return r;
   });
+  const media = opts.media || makeMediaStub();
   const processItem = makeProcessItem({
+    media,
     getClient: (phone) => getClient(db, phone),
     generators: fakes.generators,
     renderImage: fakes.renderImage,
@@ -120,7 +135,7 @@ export function makeHarness(db, opts = {}) {
     logger: silentLogger,
     genTimeoutMs: config.itemTimeoutMs,
   });
-  const queue = createQueue({ db, config, clock, logger: silentLogger, processItem, isEnabled, limiter });
+  const queue = createQueue({ db, config, clock, logger: silentLogger, processItem, isEnabled, limiter, media });
   // Records every lost-day notice so tests can assert on them without WhatsApp.
   const missedNotices = [];
   const scheduler = createScheduler({
@@ -128,7 +143,7 @@ export function makeHarness(db, opts = {}) {
     listActiveClients: () => listActive(db), isSchedulingActive,
     onMissedDay: (client, credited) => { missedNotices.push({ phone: client.phone, credited }); },
   });
-  return { clock, config, queue, scheduler, fakes, limiter, missedNotices };
+  return { clock, config, queue, scheduler, fakes, limiter, missedNotices, media };
 }
 
 const settle = () => new Promise((r) => setImmediate(r));

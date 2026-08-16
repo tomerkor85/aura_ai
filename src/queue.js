@@ -12,6 +12,7 @@
 //   resume from the last delivered slide). A crash/timeout in `sending` is left for
 //   reap() to mark `unknown_delivery_state` (never silently delivered/resent).
 import * as D from './deliveries.js';
+import * as realMedia from './media-cache.js';
 
 const TYPES = ['story', 'carousel', 'reel'];
 
@@ -20,7 +21,8 @@ function nextUtcMidnight(now) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 5));
 }
 
-export function createQueue({ db, config, clock, logger, processItem, isEnabled = () => true, limiter }) {
+export function createQueue({
+  media = realMedia, db, config, clock, logger, processItem, isEnabled = () => true, limiter }) {
   const active = { story: 0, carousel: 0, reel: 0 };
   let workerSeq = 0;
   const cap = limiter || { canClaim: () => true, recordGeneration() {}, canSend: () => true, recordSend() {} };
@@ -57,6 +59,7 @@ export function createQueue({ db, config, clock, logger, processItem, isEnabled 
         setPayload: (json) => D.setPayload(db, item.id, json),
       });
       D.markDelivered(db, item.id, clock.now(), res && res.wa_message_id);
+      media.dropItemMedia(item.id); // delivered: the cached asset has done its job
       const secs = Math.round((clock.now().getTime() - startedMs) / 1000);
       logger.info('queue', `delivered ${item.content_type} #${item.id} ${item.phone} in ${secs}s`);
     } catch (err) {
@@ -75,6 +78,7 @@ export function createQueue({ db, config, clock, logger, processItem, isEnabled 
     }
     if (err && err.terminal) {
       D.markFailed(db, item.id, msg);
+      media.dropItemMedia(item.id);
       logger.warn('queue', `terminal ${item.content_type} #${item.id} ${item.phone}: ${msg}`);
       return;
     }
@@ -84,6 +88,7 @@ export function createQueue({ db, config, clock, logger, processItem, isEnabled 
       logger.warn('queue', `retry ${item.content_type} #${item.id} ${item.phone} (attempt ${item.retry_count + 1}/${config.maxRetries}) after: ${msg}`);
     } else {
       D.markFailed(db, item.id, `max retries reached: ${msg}`);
+      media.dropItemMedia(item.id);
       logger.error('queue', `gave up ${item.content_type} #${item.id} ${item.phone}: ${msg}`);
     }
   }
