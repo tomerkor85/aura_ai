@@ -55,22 +55,36 @@ export async function readChat(phone) {
   return post('readChat', { chatId: phoneToChatId(phone) });
 }
 
-// Send an image from a base64 payload via multipart upload
-export async function sendImageBase64(phone, base64Data, { fileName = 'aura.png', caption = '' } = {}) {
-  const buffer = Buffer.from(base64Data, 'base64');
-  const form = new FormData();
-  form.append('chatId', phoneToChatId(phone));
-  form.append('caption', caption);
-  form.append('file', new Blob([buffer], { type: 'image/png' }), fileName);
-
-  // NOTE: media host, not the API host — see config.greenApi.mediaUrl.
-  const res = await fetch(url('sendFileByUpload', { media: true }), {
-    method: 'POST', body: form, signal: AbortSignal.timeout(60_000),
+// Upload raw bytes to Green API's own storage and get back a public urlFile.
+// Runs against the media host.
+async function uploadFile(buffer, contentType = 'image/png') {
+  const res = await fetch(url('uploadFile', { media: true }), {
+    method: 'POST',
+    headers: { 'Content-Type': contentType },
+    body: buffer,
+    signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
-    throw new Error(`Green API sendFileByUpload failed: ${res.status} ${await res.text()}`);
+    throw new Error(`Green API uploadFile failed: ${res.status} ${await res.text()}`);
   }
-  return res.json();
+  const data = await res.json();
+  if (!data || !data.urlFile) {
+    throw new Error(`Green API uploadFile returned no urlFile: ${JSON.stringify(data)}`);
+  }
+  return data.urlFile;
+}
+
+// Send an image held in memory as base64.
+//
+// Deliberately NOT sendFileByUpload: on this instance that endpoint answers 500
+// "Internal server error" for every payload, including a well-formed one with a
+// deliberately invalid chatId — it fails before validation, while sendMessage and
+// sendFileByUrl answer 400 for the same input. So the multipart route is broken
+// server-side, and we take the two-step path instead: upload the bytes to Green
+// API's storage, then send the URL it returns.
+export async function sendImageBase64(phone, base64Data, { fileName = 'aura.png', caption = '' } = {}) {
+  const urlFile = await uploadFile(Buffer.from(base64Data, 'base64'), 'image/png');
+  return sendFileByUrl(phone, urlFile, { fileName, caption });
 }
 
 // Send a media file (image/video) from a public URL
