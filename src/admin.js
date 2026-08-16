@@ -335,12 +335,21 @@ export function createAdminApp(controls = {}) {
     const saved = getClientByPhone(phone);
     const wasEligible = !!(existing && existing.scheduled_content_enabled && existing.status === 'active');
     const nowEligible = !!(saved.scheduled_content_enabled && saved.status === 'active');
-    if (nowEligible && !wasEligible) {
+    if (nowEligible) {
       const now = new Date();
-      if (Q.isPastSendTime(saved, now)) {
-        const todayStr = Q.localDateStr(now, Q.clientTz(saved));
+      const todayStr = Q.localDateStr(now, Q.clientTz(saved));
+      const passed = Q.isPastSendTime(saved, now);
+      if (passed && !wasEligible) {
+        // Only for a client that just became eligible. An ALREADY eligible client
+        // whose day has not been delivered is owed it — sealing here would hide an
+        // outage instead of crediting it.
         const sealed = D.seedSkippedItems(db, Q.dueItems(saved, todayStr));
         if (sealed) logger.info('admin', `${phone} enabled after today's send time — sealed ${sealed} item(s) as skipped`);
+      } else if (!passed) {
+        // The send time now lies ahead: any seal on today was made under an earlier
+        // time and no longer describes reality.
+        const freed = D.unsealDay(db, saved.phone, todayStr);
+        if (freed) logger.info('admin', `${phone} send time moved to ${Q.clientSendTime(saved)} — unsealed ${freed} item(s) for ${todayStr}`);
       }
     }
     res.json({ ...saved, reactivated });

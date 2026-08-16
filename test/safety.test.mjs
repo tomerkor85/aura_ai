@@ -131,6 +131,37 @@ test('A day sealed at signup is never credited — it was never owed', () => {
   assert.equal(h.missedNotices.length, 0, 'and no apology for content that was never due');
 });
 
+test('Moving the send time later frees a day that was sealed at signup', async () => {
+  const db = makeDb();
+  // Created at 09:00 with a 07:30 send time: today is sealed, correctly.
+  const c = addClient(db, { phone: '1', registration_date: REG });
+  const sealed = D.seedSkippedItems(db, Q.dueItems(c, '2026-07-19'));
+  assert.ok(sealed > 0);
+
+  // The admin then moves the send time to 14:00 — still ahead of 09:00 "now", so
+  // the seal describes a decision that no longer applies.
+  const freed = D.unsealDay(db, '1', '2026-07-19');
+  assert.equal(freed, sealed, 'the seal is lifted');
+
+  const h = makeHarness(db, { clock: fakeClock(Date.parse('2026-07-19T11:30:00Z')) }); // 14:30 local
+  h.scheduler.tick();
+  await drain(db, h.queue, h.clock);
+  assert.equal(count(db, "WHERE scheduled_date='2026-07-19' AND status='delivered'"), sealed,
+    'the day delivers at the new time');
+});
+
+test('Unsealing never touches anything already generated or delivered', () => {
+  const db = makeDb();
+  const c = addClient(db, { phone: '1', registration_date: REG });
+  D.enqueueItems(db, [storyItem('1', 1)]);                    // a live, queued row
+  D.seedSkippedItems(db, Q.dueItems(c, '2026-07-19'));        // seals the rest
+  const before = count(db, '');
+  const freed = D.unsealDay(db, '1', '2026-07-19');
+  assert.equal(count(db, "WHERE status='scheduled'"), 1, 'the queued row survives');
+  assert.equal(count(db, ''), before - freed);
+  assert.equal(count(db, "WHERE status='skipped'"), 0);
+});
+
 test('Locally-formatted numbers are converted before they can reach WhatsApp', () => {
   // 0542889353 looks right in the panel and is stored happily, but WhatsApp only
   // accepts international form — the mismatch surfaced as a send-time rejection
