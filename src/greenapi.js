@@ -1,10 +1,18 @@
 import { config } from './config.js';
 
-const BASE = 'https://api.green-api.com';
+function url(method, { media = false } = {}) {
+  const { idInstance, token, baseUrl, mediaUrl } = config.greenApi;
+  return `${media ? mediaUrl : baseUrl}/waInstance${idInstance}/${method}/${token}`;
+}
 
-function url(method) {
-  const { idInstance, token } = config.greenApi;
-  return `${BASE}/waInstance${idInstance}/${method}/${token}`;
+// A 4xx from Green API is a rejected REQUEST — a number WhatsApp does not have,
+// a malformed field — and retrying it just burns attempts and delays the real
+// signal. 429 is the exception: that one clears on its own. Everything else
+// (5xx, network, timeout) stays retryable.
+function failure(method, status, text) {
+  const err = new Error(`Green API ${method} failed: ${status} ${text}`);
+  if (status >= 400 && status < 500 && status !== 429) err.terminal = true;
+  return err;
 }
 
 async function post(method, body) {
@@ -12,11 +20,28 @@ async function post(method, body) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
-    throw new Error(`Green API ${method} failed: ${res.status} ${await res.text()}`);
+    throw failure(method, res.status, await res.text());
   }
   return res.json();
+}
+
+// WhatsApp addresses numbers in international form with no '+' and no leading
+// zero: 972542889353. A local number (0542889353) is a valid-looking string that
+// Green API rejects with "'chatId': invalid phone number", so it is converted
+// here rather than stored and discovered at send time.
+//
+// Returns null when the input cannot be a phone number, so callers can refuse it.
+export function normalizePhone(input, countryCode = config.defaultCountryCode) {
+  let digits = String(input || '').replace(/\D/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('00')) digits = digits.slice(2);      // 00972... -> 972...
+  if (digits.startsWith('0')) digits = countryCode + digits.slice(1); // 054... -> 97254...
+  // E.164 allows up to 15 digits; anything under 8 is not a reachable number.
+  if (digits.length < 8 || digits.length > 15) return null;
+  return digits;
 }
 
 export function phoneToChatId(phone) {
@@ -33,24 +58,59 @@ export async function sendText(phone, message) {
 
 // Returns the instance auth state, e.g. { stateInstance: 'authorized' }
 export async function getStateInstance() {
-  const res = await fetch(url('getStateInstance'), { method: 'GET' });
+  const res = await fetch(url('getStateInstance'), { method: 'GET', signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`Green API getStateInstance failed: ${res.status} ${await res.text()}`);
   return res.json();
 }
 
-// Send an image from a base64 payload via multipart upload
-export async function sendImageBase64(phone, base64Data, { fileName = 'aura.png', caption = '' } = {}) {
-  const buffer = Buffer.from(base64Data, 'base64');
-  const form = new FormData();
-  form.append('chatId', phoneToChatId(phone));
-  form.append('caption', caption);
-  form.append('file', new Blob([buffer], { type: 'image/png' }), fileName);
-
-  const res = await fetch(url('sendFileByUpload'), { method: 'POST', body: form });
-  if (!res.ok) {
-    throw new Error(`Green API sendFileByUpload failed: ${res.status} ${await res.text()}`);
-  }
+// Instance settings — the `incomingWebhook` flag must be 'yes' for incoming
+// messages to be delivered to receiveNotification (our polling loop).
+export async function getSettings() {
+  const res = await fetch(url('getSettings'), { method: 'GET', signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`Green API getSettings failed: ${res.status} ${await res.text()}`);
   return res.json();
+}
+
+export async function setSettings(settings) {
+  return post('setSettings', settings);
+}
+
+// Mark the whole chat as read (blue ticks) — immediate "I saw your message"
+// feedback for the client while the agent works on a reply.
+export async function readChat(phone) {
+  return post('readChat', { chatId: phoneToChatId(phone) });
+}
+
+// Upload raw bytes to Green API's own storage and get back a public urlFile.
+// Runs against the media host.
+async function uploadFile(buffer, contentType = 'image/png') {
+  const res = await fetch(url('uploadFile', { media: true }), {
+    method: 'POST',
+    headers: { 'Content-Type': contentType },
+    body: buffer,
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!res.ok) {
+    throw failure('uploadFile', res.status, await res.text());
+  }
+  const data = await res.json();
+  if (!data || !data.urlFile) {
+    throw new Error(`Green API uploadFile returned no urlFile: ${JSON.stringify(data)}`);
+  }
+  return data.urlFile;
+}
+
+// Send an image held in memory as base64.
+//
+// Deliberately NOT sendFileByUpload: on this instance that endpoint answers 500
+// "Internal server error" for every payload, including a well-formed one with a
+// deliberately invalid chatId — it fails before validation, while sendMessage and
+// sendFileByUrl answer 400 for the same input. So the multipart route is broken
+// server-side, and we take the two-step path instead: upload the bytes to Green
+// API's storage, then send the URL it returns.
+export async function sendImageBase64(phone, base64Data, { fileName = 'aura.png', caption = '' } = {}) {
+  const urlFile = await uploadFile(Buffer.from(base64Data, 'base64'), 'image/png');
+  return sendFileByUrl(phone, urlFile, { fileName, caption });
 }
 
 // Send a media file (image/video) from a public URL
@@ -74,7 +134,7 @@ export async function sendVisual(phone, visual, { fileName = 'aura.png', caption
 // --- Incoming messages via polling (works locally, no public URL needed) ---
 
 export async function receiveNotification() {
-  const res = await fetch(url('receiveNotification'), { method: 'GET' });
+  const res = await fetch(url('receiveNotification'), { method: 'GET', signal: AbortSignal.timeout(60_000) });
   if (!res.ok) {
     throw new Error(`Green API receiveNotification failed: ${res.status}`);
   }
@@ -84,13 +144,21 @@ export async function receiveNotification() {
 }
 
 export async function deleteNotification(receiptId) {
-  const res = await fetch(`${url('deleteNotification')}/${receiptId}`, { method: 'DELETE' });
+  const res = await fetch(`${url('deleteNotification')}/${receiptId}`, { method: 'DELETE', signal: AbortSignal.timeout(30_000) });
   if (!res.ok) {
     throw new Error(`Green API deleteNotification failed: ${res.status}`);
   }
 }
 
-// Extract {phone, text} from an incoming notification body, or null if not a text message
+// Message types the client actively sent but we can't process as text —
+// they deserve a polite "text only for now" reply instead of silence.
+const MEDIA_TYPES = new Set([
+  'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage',
+]);
+
+// Extract {phone, text} from an incoming notification body.
+// Returns {phone, nonText: true} for media messages (image/voice/video/document),
+// or null for anything else (groups, reactions, service events).
 export function parseIncoming(body) {
   if (body?.typeWebhook !== 'incomingMessageReceived') return null;
   const chatId = body?.senderData?.chatId || '';
@@ -100,6 +168,7 @@ export function parseIncoming(body) {
     md.textMessageData?.textMessage ??
     md.extendedTextMessageData?.text ??
     null;
-  if (!text) return null;
-  return { phone: chatIdToPhone(chatId), text };
+  if (text) return { phone: chatIdToPhone(chatId), text };
+  if (MEDIA_TYPES.has(md.typeMessage)) return { phone: chatIdToPhone(chatId), nonText: true };
+  return null;
 }

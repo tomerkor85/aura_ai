@@ -1,6 +1,9 @@
 // Smoke test: verifies modules load, DB schema builds, and prompts render. No API calls.
 import { PACKAGES } from '../src/config.js';
-import { upsertClient, getClientByPhone, getImageState, startImageState, recordImageEdit } from '../src/db.js';
+import {
+  upsertClient, getClientByPhone, getImageState, startImageState, recordImageEdit,
+  getUsage, incrementUsage, currentMonth,
+} from '../src/db.js';
 import { buildSystemPrompt, buildDailyPrompt } from '../src/prompts.js';
 import { parseIncoming, phoneToChatId } from '../src/greenapi.js';
 // Import the heavy modules to catch load/syntax errors (no API calls made).
@@ -16,7 +19,6 @@ upsertClient({
   name: example.name,
   business_name: example.business_name,
   package: 'basic',
-  send_hour: 8,
   profile: example.profile,
 });
 
@@ -53,4 +55,14 @@ startImageState('972500000000', 'resp_4', client.profile); // new image resets c
 st = getImageState('972500000000');
 if (st.edit_count !== 0) throw new Error('edit_count reset on new image failed');
 
-console.log('Smoke test passed: DB, prompts, image_state + edit limits, module loads all OK.');
+// usage: month key renders, counters increment per kind
+if (!/^\d{4}-\d{2}$/.test(currentMonth())) throw new Error('currentMonth format wrong');
+const before = getUsage('972500000000');
+incrementUsage('972500000000', 'image');
+incrementUsage('972500000000', 'video');
+const after = getUsage('972500000000');
+if (after.images !== before.images + 1 || after.videos !== before.videos + 1) {
+  throw new Error('incrementUsage failed');
+}
+
+console.log('Smoke test passed: DB, prompts, usage counters, image_state + edit limits, module loads all OK.');

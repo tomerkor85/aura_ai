@@ -5,14 +5,14 @@
 סוכן אחד משותף לכל הלקוחות; הזיהוי לפי מספר הטלפון, והתוכן נוצר לפי פרופיל המותג של אותו לקוח ב-DB.
 
 ## רכיבים
-
+ 
 | רכיב | תפקיד |
 |---|---|
 | `src/index.js` | תהליך ראשי: מאזין להודעות ווטסאפ (polling) + מרים את פאנל הניהול. **אין מתזמן — המערכת תגובתית.** |
 | `src/admin.js` + `public/` | פאנל ניהול לקוחות (UI) — הזנת פרופיל מותג, שמירה ל-DB, "צור תוכן עכשיו" |
 | `src/agent.js` | הסוכן: Claude לטקסט + כלים `generate_image` (create/edit) / `generate_video` |
 | `src/openai_images.js` | תמונות בצ'אט — OpenAI Responses API (יצירה + עריכה המשכית) |
-| `src/visual.js` | Seedream (תמונות) + Seedance (וידאו), OpenAI כגיבוי |
+| `src/visual.js` | Seedance (וידאו) — התמונות עברו כולן ל-Responses API |
 | `src/daily.js` | בונה חבילת תוכן ידנית לכפתור "צור תוכן עכשיו" (הפעלה יזומה, לא מתוזמנת) |
 | `src/greenapi.js` | שכבת ווטסאפ (שליחה, קבלה ב-polling) |
 | `src/auth.js` | אבטחת פאנל הניהול (hash סיסמה, סשן חתום, rate-limit) |
@@ -36,6 +36,9 @@
 ## חבילות (מכסה חודשית)
 
 המספרים מוגדרים ב-[src/config.js](src/config.js) (`PACKAGES`) — עדכני לפי התמחור שלך.
+המכסות **נאכפות** מול טבלת `usage` ב-DB: כל תמונה חדשה וכל וידאו נספרים לפי חודש קלנדרי
+(לפי `TZ_NAME`), וכשנגמרת המכסה הסוכן מסביר ללקוח שהמכסה תתחדש בתחילת החודש. השימוש
+החודשי מוצג גם בפאנל הניהול ליד כל לקוח.
 
 | חבילה | תמונות/חודש | סרטונים/חודש | עריכות לכל תמונה |
 |---|---|---|---|
@@ -69,9 +72,12 @@ npm run hash-password -- "סיסמה"    # יוצר ADMIN_PASSWORD_HASH לפרו
 | משתנה | מאיפה |
 |---|---|
 | `GREEN_API_ID_INSTANCE` + `GREEN_API_TOKEN` | Green API — Instance מחובר למספר ווטסאפ |
-| `ANTHROPIC_API_KEY` | מנוע הטקסט (Claude) |
-| `OPENAI_API_KEY` + `OPENAI_RESPONSES_MODEL` | תמונות בצ'אט (Responses API) |
-| `BYTEPLUS_API_KEY` + `SEEDREAM_MODEL` + `SEEDANCE_MODEL` | תמונות ווידאו (Seedream/Seedance) |
+| `ANTHROPIC_API_KEY` + `CLAUDE_MODEL` | מנוע הטקסט (Claude, אם `TEXT_PROVIDER=anthropic`) |
+| `OPENAI_API_KEY` + `OPENAI_TEXT_MODEL` / `OPENAI_BULK_MODEL` / `OPENAI_PREMIUM_MODEL` | מדרג מודלים: Terra לתוכן ראשי, Luna לחבילות/וריאציות, Sol כ-fallback אוטומטי |
+| `OPENAI_RESPONSES_MODEL` | תמונות (Responses API) |
+| `LOG_LEVEL` + `LOG_KEEP_DAYS` | לוגים מלאים לקונסול + קובץ יומי ב-`<DATA_DIR>/logs/` (ברירת מחדל info, נשמר 14 יום) |
+| `BYTEPLUS_API_KEY` + `SEEDANCE_MODEL` | וידאו (Seedance) |
+| `SUPPORT_EMAIL` | מייל ליצירת קשר בהודעות השהיה/ביטול מנוי |
 | `ADMIN_PASSWORD_HASH` + `SESSION_SECRET` | אבטחת פאנל הניהול |
 
 ## אבטחת פאנל הניהול

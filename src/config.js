@@ -5,33 +5,47 @@ export const config = {
   greenApi: {
     idInstance: process.env.GREEN_API_ID_INSTANCE || '',
     token: process.env.GREEN_API_TOKEN || '',
+    baseUrl: (process.env.GREEN_API_BASE_URL || 'https://api.green-api.com').replace(/\/$/, ''),
+    // uploadFile (step one of sending an image) goes to the MEDIA host.
+    mediaUrl: (process.env.GREEN_API_MEDIA_URL
+      || (process.env.GREEN_API_BASE_URL || 'https://api.green-api.com').replace('//api.', '//media.')
+    ).replace(/\/$/, ''),
   },
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
-  claudeModel: 'claude-opus-4-8',
+  claudeModel: process.env.CLAUDE_MODEL || 'claude-opus-4-8',
 
+  // BytePlus powers video only (Seedance); images moved to the OpenAI Responses API.
   byteplus: {
     apiKey: process.env.BYTEPLUS_API_KEY || '',
     baseUrl: (process.env.BYTEPLUS_BASE_URL || 'https://ark.ap-southeast.bytepluses.com/api/v3').replace(/\/$/, ''),
-    seedreamModel: process.env.SEEDREAM_MODEL || 'seedream-3-0-t2i-250415',
     seedanceModel: process.env.SEEDANCE_MODEL || 'seedance-1-0-lite-t2v-250428',
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY || '',
-    imageModel: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1',
-    // Model for the Responses API (conversational, editable images). Confirm the
-    // exact model name in your OpenAI account.
-    responsesModel: process.env.OPENAI_RESPONSES_MODEL || 'gpt-5.6',
-    // Model for the chat/text engine (copy, hooks, tool calling). Confirm in your account.
-    textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5.6',
+    // Model for the Responses API (conversational, editable images).
+    responsesModel: process.env.OPENAI_RESPONSES_MODEL || 'gpt-5.6-terra',
+    // Model tiers (use EXPLICIT ids from /v1/models — bare aliases like 'gpt-5.6'
+    // are unlisted and showed flaky routing/401s):
+    //   textModel    — main content: chat, posts, hooks (quality tier)
+    //   bulkModel    — bulk variations: content packs, captions, CTAs (cheap tier)
+    //   premiumModel — fallback when the main model fails (top tier)
+    textModel: process.env.OPENAI_TEXT_MODEL || 'gpt-5.6-terra',
+    bulkModel: process.env.OPENAI_BULK_MODEL || 'gpt-5.6-luna',
+    premiumModel: process.env.OPENAI_PREMIUM_MODEL || 'gpt-5.6-sol',
+    // Reasoning models (e.g. gpt-5.x) require reasoning_effort:'none' when using
+    // function tools in Chat Completions. Set '' to omit for non-reasoning models.
+    reasoningEffort: process.env.OPENAI_REASONING_EFFORT ?? 'none',
   },
-  imageProvider: (process.env.IMAGE_PROVIDER || 'byteplus').toLowerCase(),
 
   // Which provider powers the text/chat engine: 'openai' or 'anthropic'.
   // Switch by setting TEXT_PROVIDER and restarting.
   textProvider: (process.env.TEXT_PROVIDER || 'openai').toLowerCase(),
 
-  dailyImages: (process.env.DAILY_IMAGES || 'false').toLowerCase() === 'true',
   tz: process.env.TZ_NAME || 'Asia/Jerusalem',
+
+  // Country code applied to locally-formatted numbers entered in the panel
+  // (0542889353 -> 972542889353). WhatsApp only accepts international form.
+  defaultCountryCode: (process.env.DEFAULT_COUNTRY_CODE || '972').replace(/\D/g, ''),
 
   // Max edits per single generated image / video before the client must create a new one.
   maxImageEdits: parseInt(process.env.MAX_IMAGE_EDITS || '3', 10),
@@ -48,6 +62,9 @@ export const config = {
   forceSecureCookie: (process.env.FORCE_SECURE_COOKIE || 'false').toLowerCase() === 'true',
 
   dataDir: process.env.DATA_DIR || '',
+
+  // Contact address shown to clients whose subscription is suspended/canceled.
+  supportEmail: process.env.SUPPORT_EMAIL || '',
 };
 
 function randomHex() {
@@ -87,3 +104,89 @@ export const PACKAGES = {
 export function packageOf(client) {
   return PACKAGES[client.package] || PACKAGES.basic;
 }
+
+// ============================================================================
+// Scheduled subscription content — a SEPARATE quota axis from the monthly
+// PACKAGES above (which govern on-demand conversational generation).
+//
+// This is the CEILING per calendar week, not a timetable: each client picks
+// which weekdays receive what, up to these totals (see clientSchedule() in
+// quota.js). Premium = exactly double Basic.
+//
+// Cycles are calendar weeks (Sunday–Saturday) in the client's timezone, so
+// "carousel on Wednesday" means the same thing for every client.
+// ============================================================================
+export const CONTENT_TYPES = ['story', 'carousel', 'reel'];
+
+export const WEEKLY_ALLOWANCE = {
+  basic: { story: 14, carousel: 1, reel: 1 },   // 2 stories/day
+  premium: { story: 28, carousel: 2, reel: 2 }, // 4 stories/day
+};
+
+export function weeklyAllowanceOf(client) {
+  return WEEKLY_ALLOWANCE[client.package] || WEEKLY_ALLOWANCE.basic;
+}
+
+// Default weekday spread, used when a client has no custom schedule. Mirrors the
+// previous behaviour as closely as a weekday model can: stories every day, and
+// the week's carousel/reel on Sunday (cycle day 0).
+export function defaultSchedule(client) {
+  const a = weeklyAllowanceOf(client);
+  const perDay = Math.floor(a.story / 7);
+  const week = {};
+  for (let d = 0; d <= 6; d++) week[d] = { story: perDay, carousel: 0, reel: 0 };
+  week[0].carousel = a.carousel;
+  week[0].reel = a.reel;
+  return week;
+}
+
+const intEnv = (name, def) => {
+  const n = parseInt(process.env[name] || '', 10);
+  return Number.isFinite(n) && n > 0 ? n : def;
+};
+
+// Send times are 'HH:MM', 24-hour. A 12-hour value like '10:09PM' parses to
+// 10:09 in the MORNING instead of failing, so anything malformed is rejected
+// here rather than silently shifting every client's send time.
+export const isValidHM = (s) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(s ?? '').trim());
+
+const hmEnv = (name, def) => {
+  const v = (process.env[name] || '').trim();
+  return isValidHM(v) ? v : def;
+};
+
+// Scheduler + delivery-queue tuning. All overridable via env for prod control.
+export const scheduleConfig = {
+  // MASTER SWITCH — off by default. The scheduler never enqueues, and the queue
+  // never claims/sends, unless this is explicitly 'true'. Combined at runtime with
+  // the admin pause toggle and the per-client `scheduled_content_enabled` flag.
+  enabled: (process.env.SCHEDULED_CONTENT_ENABLED || 'false').toLowerCase() === 'true',
+  // Provider-specific daily safety caps. When a cap is hit, jobs stay queued
+  // (nothing is deleted and no quota is consumed) and resume the next day.
+  dailyLimits: {
+    story: intEnv('MAX_STORY_PER_DAY', 200),
+    carousel: intEnv('MAX_CAROUSEL_PER_DAY', 50),
+    reel: intEnv('MAX_REEL_PER_DAY', 20),
+    whatsapp: intEnv('MAX_WHATSAPP_PER_DAY', 1000),
+  },
+  defaultSendTime: hmEnv('DEFAULT_SEND_TIME', '07:30'),
+  // Recovery is bounded by the local DAY, not by a fixed grace: an outage that
+  // ends at 13:00 must still deliver a 09:00 client's content, because the client
+  // paid for it. Once the local date rolls over the day cannot be delivered
+  // late — it is credited back to the quota instead (see creditMissedDay).
+  defaultTz: process.env.TZ_NAME || 'Asia/Jerusalem',
+  // Scheduler tick: at least once per minute (clamped to <= 60s).
+  tickMs: Math.min(60_000, intEnv('SCHEDULER_TICK_MS', 30_000)),
+  // Per-type worker concurrency — video (reel) is slow/expensive, so it's low.
+  concurrency: {
+    story: intEnv('CONCURRENCY_STORY', 3),
+    carousel: intEnv('CONCURRENCY_CAROUSEL', 2),
+    reel: intEnv('CONCURRENCY_REEL', 1),
+    whatsapp: intEnv('CONCURRENCY_WHATSAPP', 2), // global cap on Green API sends
+  },
+  maxRetries: intEnv('JOB_MAX_RETRIES', 4),
+  backoffBaseMs: intEnv('JOB_BACKOFF_BASE_MS', 30_000),
+  backoffCapMs: intEnv('JOB_BACKOFF_CAP_MS', 900_000), // 15 min
+  leaseMs: intEnv('JOB_LEASE_MS', 600_000),            // 10 min stuck-job timeout
+  itemTimeoutMs: intEnv('JOB_ITEM_TIMEOUT_MS', 300_000),
+};

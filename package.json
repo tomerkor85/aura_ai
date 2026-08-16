@@ -7,19 +7,22 @@
   "scripts": {
     "start": "node src/index.js",
     "admin": "node src/admin.js",
+    "backup": "node scripts/backup-db.js",
     "hash-password": "node scripts/hash-password.js",
     "check-wa": "node scripts/check-wa.js",
+    "check-openai": "node scripts/check-openai.js",
+    "check-settings": "node scripts/check-settings.js",
     "send-daily": "node scripts/send-daily.js",
-    "smoke": "node scripts/smoke.js"
+    "smoke": "node scripts/smoke.js",
+    "test": "node --test test/"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "better-sqlite3": "^11.8.0",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2",
-    "node-cron": "^3.0.3"
+    "express": "^4.21.2"
   },
   "engines": {
-    "node": ">=18"
+    "node": "22.x"
   }
 }

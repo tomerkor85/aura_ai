@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
+import { applyScheduleSchema } from './schema.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // On Railway, set DATA_DIR to a mounted Volume (e.g. /data) so the DB survives redeploys.
@@ -20,7 +21,6 @@ CREATE TABLE IF NOT EXISTS clients (
   business_name TEXT NOT NULL,
   package       TEXT NOT NULL DEFAULT 'basic',-- basic | premium
   status        TEXT NOT NULL DEFAULT 'active',
-  send_hour     INTEGER NOT NULL DEFAULT 8,   -- local hour for daily content
   profile       TEXT NOT NULL,                -- full brand profile as JSON
   created_at    TEXT DEFAULT (datetime('now'))
 );
@@ -34,10 +34,14 @@ CREATE TABLE IF NOT EXISTS history (
 );
 CREATE INDEX IF NOT EXISTS idx_history_phone ON history(phone, id);
 
-CREATE TABLE IF NOT EXISTS daily_log (
-  phone     TEXT NOT NULL,
-  sent_date TEXT NOT NULL,                    -- YYYY-MM-DD
-  PRIMARY KEY (phone, sent_date)
+-- Monthly consumption per client, checked against the package quotas
+-- (PACKAGES in config.js) before every image/video generation.
+CREATE TABLE IF NOT EXISTS usage (
+  phone  TEXT NOT NULL,
+  month  TEXT NOT NULL,                       -- YYYY-MM (in the configured timezone)
+  images INTEGER NOT NULL DEFAULT 0,
+  videos INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (phone, month)
 );
 
 -- Tracks the last editable image generated per client (OpenAI Responses API).
@@ -55,6 +59,27 @@ CREATE TABLE IF NOT EXISTS image_state (
 
 // Migration for DBs created before edit_count existed.
 try { db.exec('ALTER TABLE image_state ADD COLUMN edit_count INTEGER NOT NULL DEFAULT 0'); } catch { /* already exists */ }
+
+// Subscription statuses: active | suspended | canceled.
+// notified_status = the non-active status the client was already notified about,
+// so the suspension/cancellation notice is sent exactly once per status change.
+try { db.exec('ALTER TABLE clients ADD COLUMN notified_status TEXT'); } catch { /* already exists */ }
+// Legacy value from the old two-state model.
+db.prepare("UPDATE clients SET status = 'suspended' WHERE status = 'paused'").run();
+
+// NOTE: previous versions dropped a legacy `daily_log` table and `send_hour`
+// column on every boot. Those DESTRUCTIVE startup statements were removed — the
+// scheduler must never have schema destroyed on startup. A leftover `send_hour`
+// column on old DBs is harmless (unused) and is left in place.
+
+// Payment tracking: when the client paid, and when the subscription ends
+// (ISO datetimes; end defaults to exactly one month after payment).
+try { db.exec('ALTER TABLE clients ADD COLUMN paid_at TEXT'); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE clients ADD COLUMN subscription_ends_at TEXT'); } catch { /* already exists */ }
+
+// Scheduled-content feature: delivery queue + quota adjustments + per-client
+// scheduling columns (registration_date, send_time, timezone). Idempotent + additive.
+applyScheduleSchema(db);
 
 export function getImageState(phone) {
   return db.prepare('SELECT * FROM image_state WHERE phone = ?').get(phone) || null;
@@ -106,27 +131,95 @@ export function listAllClients() {
 export function deleteClient(phone) {
   db.prepare('DELETE FROM clients WHERE phone = ?').run(phone);
   db.prepare('DELETE FROM history WHERE phone = ?').run(phone);
-  db.prepare('DELETE FROM daily_log WHERE phone = ?').run(phone);
   db.prepare('DELETE FROM image_state WHERE phone = ?').run(phone);
+  db.prepare('DELETE FROM usage WHERE phone = ?').run(phone);
 }
 
-export function upsertClient({ phone, name, business_name, package: pkg, status, send_hour, profile }) {
+export function upsertClient({
+  phone, name, business_name, package: pkg, status, profile, paid_at, subscription_ends_at,
+  registration_date, send_time, timezone, scheduled_content_enabled, schedule,
+}) {
   db.prepare(`
-    INSERT INTO clients (phone, name, business_name, package, status, send_hour, profile)
-    VALUES (@phone, @name, @business_name, @pkg, @status, @send_hour, @profile)
+    INSERT INTO clients
+      (phone, name, business_name, package, status, profile, paid_at, subscription_ends_at,
+       registration_date, send_time, timezone, scheduled_content_enabled, schedule)
+    VALUES (@phone, @name, @business_name, @pkg, @status, @profile, @paid_at, @ends_at,
+            COALESCE(@reg, datetime('now')), COALESCE(@send, '07:30'), COALESCE(@tz, 'Asia/Jerusalem'),
+            COALESCE(@sce, 0), @schedule)
     ON CONFLICT(phone) DO UPDATE SET
       name = @name, business_name = @business_name, package = @pkg,
-      status = @status, send_hour = @send_hour, profile = @profile
+      status = @status, profile = @profile,
+      paid_at = @paid_at, subscription_ends_at = @ends_at,
+      -- Scheduling fields: update when provided, otherwise keep the existing value
+      -- (changing send_time/timezone never touches quota or usage history).
+      registration_date = COALESCE(@reg, clients.registration_date),
+      send_time = COALESCE(@send, clients.send_time),
+      timezone = COALESCE(@tz, clients.timezone),
+      scheduled_content_enabled = COALESCE(@sce, clients.scheduled_content_enabled),
+      schedule = COALESCE(@schedule, clients.schedule),
+      -- On a status change, clear the "already notified" marker so the client
+      -- gets the one-time notice for the NEW status (e.g. suspended -> canceled,
+      -- or a second suspension after reactivation).
+      notified_status = CASE WHEN clients.status = @status THEN clients.notified_status ELSE NULL END
   `).run({
     phone, name, business_name, pkg,
     status: status || 'active',
-    send_hour,
     profile: JSON.stringify(profile),
+    paid_at: paid_at || null,
+    ends_at: subscription_ends_at || null,
+    reg: registration_date || null,
+    send: send_time || null,
+    tz: timezone || null,
+    sce: scheduled_content_enabled == null ? null : (scheduled_content_enabled ? 1 : 0),
+    schedule: schedule == null ? null : JSON.stringify(schedule),
   });
 }
 
+// Mark that the one-time notice for this non-active status was sent.
+export function markStatusNotified(phone, status) {
+  db.prepare('UPDATE clients SET notified_status = ? WHERE phone = ?').run(status, phone);
+}
+
+// Active clients whose subscription end has already passed (for the periodic
+// expiry sweep). ISO-8601 UTC strings compare correctly as plain text.
+export function listExpiredActiveClients() {
+  return db
+    .prepare("SELECT * FROM clients WHERE status = 'active' AND subscription_ends_at IS NOT NULL AND subscription_ends_at < ?")
+    .all(new Date().toISOString())
+    .map((r) => ({ ...r, profile: JSON.parse(r.profile) }));
+}
+
+// Expired clients that were already suspended but whose one-time notice never
+// went out (e.g. the send failed) — the sweep retries these.
+export function listExpiredPendingNotice() {
+  return db
+    .prepare("SELECT * FROM clients WHERE status = 'suspended' AND notified_status IS NULL AND subscription_ends_at IS NOT NULL AND subscription_ends_at < ?")
+    .all(new Date().toISOString())
+    .map((r) => ({ ...r, profile: JSON.parse(r.profile) }));
+}
+
+// Automatic expiry: an active client whose subscription end has passed becomes
+// suspended. Mutates the passed client object too, and returns true when it fired.
+// (notified_status is left as-is: it was cleared when the client last became
+// active, so the one-time suspension notice will go out.)
+export function expireSubscriptionIfDue(client) {
+  if (!client || client.status !== 'active' || !client.subscription_ends_at) return false;
+  const ends = new Date(client.subscription_ends_at).getTime();
+  if (Number.isNaN(ends) || ends >= Date.now()) return false;
+  db.prepare("UPDATE clients SET status = 'suspended' WHERE phone = ?").run(client.phone);
+  client.status = 'suspended';
+  return true;
+}
+
+const HISTORY_KEEP = 200; // per client; only the last ~30 are sent to the LLM anyway
+
 export function appendHistory(phone, role, content) {
   db.prepare('INSERT INTO history (phone, role, content) VALUES (?, ?, ?)').run(phone, role, content);
+  db.prepare(`
+    DELETE FROM history WHERE phone = @phone AND id NOT IN (
+      SELECT id FROM history WHERE phone = @phone ORDER BY id DESC LIMIT @keep
+    )
+  `).run({ phone, keep: HISTORY_KEEP });
 }
 
 export function getRecentHistory(phone, limit = 30) {
@@ -136,10 +229,28 @@ export function getRecentHistory(phone, limit = 30) {
   return rows.reverse();
 }
 
-export function wasSentToday(phone, dateStr) {
-  return !!db.prepare('SELECT 1 FROM daily_log WHERE phone = ? AND sent_date = ?').get(phone, dateStr);
+// --- Monthly usage (quota enforcement + admin visibility) ---
+
+// YYYY-MM in the configured timezone (month boundaries follow the client's clock).
+export function currentMonth() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.tz, year: 'numeric', month: '2-digit',
+  }).formatToParts(new Date());
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return `${get('year')}-${get('month')}`;
 }
 
-export function markSentToday(phone, dateStr) {
-  db.prepare('INSERT OR IGNORE INTO daily_log (phone, sent_date) VALUES (?, ?)').run(phone, dateStr);
+export function getUsage(phone, month = currentMonth()) {
+  return (
+    db.prepare('SELECT images, videos FROM usage WHERE phone = ? AND month = ?').get(phone, month) ||
+    { images: 0, videos: 0 }
+  );
+}
+
+export function incrementUsage(phone, kind, month = currentMonth()) {
+  const col = kind === 'video' ? 'videos' : 'images';
+  db.prepare(`
+    INSERT INTO usage (phone, month, ${col}) VALUES (?, ?, 1)
+    ON CONFLICT(phone, month) DO UPDATE SET ${col} = ${col} + 1
+  `).run(phone, month);
 }

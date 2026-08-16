@@ -110,6 +110,32 @@
     #toast.show { opacity: 1; }
     .ghost-hint { color: var(--muted); text-align: center; margin-top: 40px; }
     .theme-toggle { background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; color: var(--ink); }
+
+    /* --- Scheduling quota cards + delivery tables --- */
+    .qcards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 10px 0 4px; }
+    @media (max-width: 560px) { .qcards { grid-template-columns: 1fr; } }
+    .qcard { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--bg); }
+    .qcard h3 { font-size: 14px; margin-bottom: 6px; color: var(--accent); }
+    .qrow { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; color: var(--muted); }
+    .qrow b { color: var(--ink); }
+    .qrow.rem { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 5px; }
+    .qrow.rem b { color: var(--accent); font-size: 17px; }
+    .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    @media (max-width: 560px) { .row3 { grid-template-columns: 1fr; } }
+    table.dtbl { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+    table.dtbl th, table.dtbl td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+    table.dtbl th { color: var(--muted); font-weight: 600; }
+    .st { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); }
+    .st.delivered { color: var(--ok); } .st.failed, .st.missed { color: var(--danger); }
+    .st.sending, .st.generating, .st.scheduled { color: var(--accent); }
+    .st.unknown_delivery_state { color: var(--danger); font-weight: 600; }
+    .globalbar { padding: 8px 20px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; }
+    .globalbar:empty { display: none; }
+    .globalbar .gb-row { display: flex; gap: 10px; align-items: center; }
+    .globalbar .gb-metrics { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); }
+    .globalbar .gb-metrics .warn { color: var(--danger); font-weight: 600; }
+    .globalbar .btn { padding: 4px 12px; }
+    .retry-btn { padding: 1px 8px; font-size: 11px; }
   </style>
 </head>
 <body>
@@ -136,6 +162,7 @@
         <button class="btn" onclick="logout()">יציאה</button>
       </div>
     </header>
+    <div id="globalbar" class="globalbar"></div>
     <div class="layout">
       <aside>
         <h3>לקוחות</h3>
@@ -217,6 +244,7 @@
     async function loadClients() {
       clients = await api('GET', '/clients');
       renderList();
+      renderGlobalBar();
       if (current) selectClient(current);
       else if (!clients.length) newClient();
       else selectClient(clients[0].phone);
@@ -230,7 +258,8 @@
         b.onclick = () => selectClient(c.phone);
         b.innerHTML = `<div class="biz"></div><div class="meta">
           <span class="pkg"></span>
-          <span class="pill ${c.status !== 'active' ? 'paused' : ''}">${c.status === 'active' ? 'פעיל' : 'מושהה'}</span>
+          <span class="pill ${c.status !== 'active' ? 'paused' : ''}">${{ active: 'פעיל', suspended: 'מושהה', canceled: 'מבוטל' }[c.status] || c.status}</span>
+          <span class="pill ${c.scheduled_content_enabled ? '' : 'paused'}">${c.scheduled_content_enabled ? '⏱ מתוזמן' : '⏱ ללא תזמון'}</span>
         </div>`;
         b.querySelector('.biz').textContent = c.business_name;
         b.querySelector('.pkg').textContent = c.package === 'premium' ? 'מורחבת' : 'בסיסית';
@@ -238,16 +267,258 @@
       });
     }
 
+    // --- weekly plan editor ---
+    // 7 rows (Sunday..Saturday) x 3 content types. The inputs carry the state, and
+    // saveClient() reads them back by id, so there is nothing to keep in sync.
+    const WEEKDAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+    const TYPES = [['story', 'סטוריז'], ['carousel', 'קרוסלות'], ['reel', 'רילז']];
+    let weekAllowance = {};
+
+    let weekAllowances = {};
+
+    // Re-cap the grid when the plan changes, so the admin sees the new ceiling (and
+    // any now-over rows in red) immediately rather than on a rejected save.
+    function onPackageChange() {
+      const pkg = $('f_package') && $('f_package').value;
+      if (weekAllowances[pkg]) weekAllowance = weekAllowances[pkg];
+      renderWeekTotals();
+    }
+
+    function weekGrid(sc) {
+      const week = (sc && sc.week) || {};
+      weekAllowance = (sc && sc.allowance) || {};
+      weekAllowances = (sc && sc.allowances) || {};
+      const cell = (d, k, v) => `<td style="padding:3px"><input type="number" min="0" max="99"
+        id="w_${d}_${k}" value="${Number(v) || 0}" oninput="renderWeekTotals()"
+        style="width:64px;text-align:center;padding:4px"></td>`;
+      const rows = WEEKDAYS.map((name, d) => {
+        const day = week[d] || week[String(d)] || {};
+        return `<tr><td style="padding:3px 8px">${name}</td>${TYPES.map(([k]) => cell(d, k, day[k])).join('')}</tr>`;
+      }).join('');
+      return `<table style="border-collapse:collapse;margin:6px 0">
+          <thead><tr><th style="padding:3px 8px;text-align:right">יום</th>
+          ${TYPES.map(([, l]) => `<th style="padding:3px 8px">${l}</th>`).join('')}</tr></thead>
+          <tbody>${rows}</tbody></table>
+        <div class="hint" id="wk_note"></div>`;
+    }
+
+    function renderWeekTotals() {
+      const el = $('wk_note');
+      if (!el) return;
+      const parts = TYPES.map(([k, label]) => {
+        let sum = 0;
+        for (let d = 0; d <= 6; d++) { const i = $(`w_${d}_${k}`); if (i) sum += Number(i.value) || 0; }
+        const max = weekAllowance[k];
+        const over = max != null && sum > max;
+        return `<span style="${over ? 'color:#e5484d;font-weight:600' : ''}">${label} ${sum}${max != null ? '/' + max : ''}</span>`;
+      }).join(' · ');
+      const over = TYPES.some(([k]) => {
+        let sum = 0;
+        for (let d = 0; d <= 6; d++) { const i = $(`w_${d}_${k}`); if (i) sum += Number(i.value) || 0; }
+        return weekAllowance[k] != null && sum > weekAllowance[k];
+      });
+      el.innerHTML = over
+        ? `${parts} — <b style="color:#e5484d">חורג מהמכסה.</b> שינוי חבילה יקצץ אוטומטית; עריכה באותה חבילה תיחסם.`
+        : `${parts} — סכום שבועי מול מכסת החבילה. אפשר לחלק פחות, לא יותר.`;
+    }
+
+    function readWeekGrid() {
+      if (!$('w_0_story')) return undefined; // grid not rendered (e.g. new client form)
+      const week = {};
+      for (let d = 0; d <= 6; d++) {
+        week[d] = {};
+        for (const [k] of TYPES) week[d][k] = Number($(`w_${d}_${k}`).value) || 0;
+      }
+      return week;
+    }
+
     // --- editor ---
     const P = (v) => (v == null ? '' : v);
     function arr(v) { return Array.isArray(v) ? v.join('\n') : P(v); }
 
+    // ISO datetime (UTC) -> value for <input type="datetime-local"> in local time.
+    function toLocalInput(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '';
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    // When the payment date changes — fill the end date exactly one month
+    // forward (month-end payments clamp to the last day of the next month).
+    // Recomputes also when the existing end date no longer makes sense
+    // (empty, or not after the new payment date); a deliberate future end is kept.
+    function autoFillSubEnd() {
+      const paid = $('f_paid_at').value;
+      if (!paid) return;
+      const paidDate = new Date(paid);
+      if (Number.isNaN(paidDate.getTime())) return;
+      if (paidDate.getTime() > Date.now() + 5 * 60 * 1000) {
+        toast('מועד התשלום לא יכול להיות בעתיד');
+        return;
+      }
+      const existingEnd = $('f_sub_end').value ? new Date($('f_sub_end').value) : null;
+      if (existingEnd && existingEnd > paidDate) return; // deliberate end — keep it
+      const d = new Date(paid);
+      const day = d.getDate();
+      d.setMonth(d.getMonth() + 1);
+      if (d.getDate() !== day) d.setDate(0);
+      $('f_sub_end').value = toLocalInput(d.toISOString());
+    }
+
+    // Human duration: minutes under an hour, hours under a day, then days.
+    function fmtDuration(ms) {
+      const mins = Math.max(1, Math.round(ms / 60000));
+      if (mins < 60) return mins === 1 ? 'דקה' : `${mins} דקות`;
+      const hours = Math.round(mins / 60);
+      if (hours < 24) return hours === 1 ? 'שעה' : `${hours} שעות`;
+      const days = Math.round(hours / 24);
+      return days === 1 ? 'יום' : `${days} ימים`;
+    }
+
+    // Human summary line: time left / expired.
+    function subSummary(c) {
+      if (!c.subscription_ends_at) return '';
+      const end = new Date(c.subscription_ends_at);
+      if (Number.isNaN(end.getTime())) return '';
+      const diff = end - Date.now();
+      const when = end.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short', hour12: false });
+      if (diff < 0) return `<div class="hint" style="color:#e5484d">⚠️ המנוי פג ב־${when} (לפני ${fmtDuration(-diff)}) — הלקוח מושהה אוטומטית; רישום תשלום חדש יחזיר אותו לפעיל</div>`;
+      return `<div class="hint">בתוקף עד ${when} — עוד ${fmtDuration(diff)}. בסיום התוקף הלקוח יושהה אוטומטית ויקבל הודעה חד פעמית</div>`;
+    }
+
+    // --- Scheduling / quota rendering ---
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+    function fmtDateTime(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString('he-IL', { dateStyle: 'short', timeStyle: 'short', hour12: false });
+    }
+    function quotaCard(title, q, cycleLabel) {
+      return `<div class="qcard"><h3>${title}</h3>
+        <div class="hint">${cycleLabel}</div>
+        <div class="qrow"><span>כלול</span><b>${q.included}</b></div>
+        <div class="qrow"><span>נוצל</span><b>${q.used}</b></div>
+        <div class="qrow"><span>תוספות אדמין</span><b>${q.adjustments}</b></div>
+        <div class="qrow rem"><span>נותר</span><b>${q.remaining}</b></div></div>`;
+    }
+    function renderDeliveries(rows) {
+      if (!rows || !rows.length) return '<div class="hint">אין רשומות</div>';
+      const type = { story: 'סטורי', carousel: 'קרוסלה', reel: 'ריל' };
+      return `<table class="dtbl"><thead><tr><th>סוג</th><th>תאריך</th><th>סטטוס</th><th>ניסיונות</th><th>הערה</th></tr></thead><tbody>${
+        rows.map((r) => `<tr>
+          <td>${type[r.content_type] || esc(r.content_type)} #${r.sequence_number}</td>
+          <td>${esc(r.scheduled_date)}</td>
+          <td><span class="st ${esc(r.status)}">${esc(r.status)}</span>${['failed', 'unknown_delivery_state', 'missed'].includes(r.status) ? ` <button class="btn retry-btn" onclick="retryDelivery(${r.id})">נסה שוב</button>` : ''}</td>
+          <td>${r.retry_count}</td>
+          <td>${esc(r.failure_reason || '')}</td></tr>`).join('')
+      }</tbody></table>`;
+    }
+    function renderAdjustments(rows) {
+      const type = { story: 'סטוריז', carousel: 'קרוסלות', reel: 'רילים' };
+      return `<table class="dtbl"><thead><tr><th>סוג</th><th>כמות</th><th>סיבה</th><th>מתי</th></tr></thead><tbody>${
+        rows.map((r) => `<tr><td>${type[r.content_type] || esc(r.content_type)}</td><td>${r.delta > 0 ? '+' : ''}${r.delta}</td><td>${esc(r.reason || '')}</td><td>${fmtDateTime(r.created_at)}</td></tr>`).join('')
+      }</tbody></table>`;
+    }
+    function scheduleSection(sc) {
+      const cyc = sc.cycles;
+      return `
+      <fieldset>
+        <legend>מכסות ומחזורים</legend>
+        <div class="hint">מחזור שבועי: ${esc(cyc.weekly.start)} → ${esc(cyc.weekly.end)} · מחזור 14 יום: ${esc(cyc.biweekly.start)} → ${esc(cyc.biweekly.end)}</div>
+        <div class="hint">המשלוח הבא: ${fmtDateTime(sc.next_delivery_at)} (${esc(sc.timezone)})${sc.status !== 'active' ? ' · ⚠️ הלקוח אינו פעיל — לא יישלח תוכן' : ''}</div>
+        <div class="qcards">
+          ${quotaCard('סטוריז', sc.quota.story, 'מחזור שבועי')}
+          ${quotaCard('קרוסלות', sc.quota.carousel, 'מחזור שבועי')}
+          ${quotaCard('רילים', sc.quota.reel, 'מחזור 14 יום')}
+        </div>
+        <div class="row3">
+          <div class="field"><label>הוסף סטוריז</label><input id="adj_story" type="number" step="1" value="0"></div>
+          <div class="field"><label>הוסף קרוסלות</label><input id="adj_carousel" type="number" step="1" value="0"></div>
+          <div class="field"><label>הוסף רילים</label><input id="adj_reel" type="number" step="1" value="0"></div>
+        </div>
+        <div class="field"><label>סיבה לתוספת</label><input id="adj_reason" placeholder="למשל: פיצוי על תקלה"></div>
+        <button class="btn" onclick="applyAdjustments()">החל תוספת מכסה</button>
+        <div class="hint">התוספות מצטברות, נרשמות ביומן, ולא דורסות את מכסת החבילה.</div>
+      </fieldset>
+
+      <fieldset>
+        <legend>משלוחים אחרונים</legend>
+        ${renderDeliveries(sc.recent_deliveries)}
+        ${sc.recent_failures && sc.recent_failures.length ? `<h3 style="margin-top:14px;font-size:14px;color:var(--danger)">כשלים והחמצות</h3>${renderDeliveries(sc.recent_failures)}` : ''}
+        ${sc.adjustments && sc.adjustments.length ? `<h3 style="margin-top:14px;font-size:14px">היסטוריית תוספות</h3>${renderAdjustments(sc.adjustments)}` : ''}
+      </fieldset>`;
+    }
+    async function applyAdjustments() {
+      if (!current) return;
+      const items = [
+        ['story', parseInt($('adj_story').value, 10)],
+        ['carousel', parseInt($('adj_carousel').value, 10)],
+        ['reel', parseInt($('adj_reel').value, 10)],
+      ].filter(([, n]) => Number.isFinite(n) && n !== 0);
+      if (!items.length) return toast('לא הוזנה תוספת');
+      const reason = $('adj_reason').value.trim();
+      try {
+        for (const [content_type, delta] of items) {
+          await api('POST', '/clients/' + encodeURIComponent(current) + '/adjustments', { content_type, delta, reason });
+        }
+        toast('התוספת הוחלה');
+        await selectClient(current);
+      } catch (e) { toast('שגיאה: ' + e.message); }
+    }
+
+    // --- Global scheduler control bar ---
+    async function renderGlobalBar() {
+      try {
+        const s = await api('GET', '/scheduler');
+        const q = s.queue;
+        const label = !s.global_enabled ? '⚫ כבוי (SCHEDULED_CONTENT_ENABLED=false)' : (s.paused ? '⏸ מושהה' : '🟢 פעיל');
+        const btn = s.global_enabled
+          ? (s.paused ? '<button class="btn" onclick="resumeScheduler()">המשך</button>' : '<button class="btn danger" onclick="pauseScheduler()">השהה הכל</button>')
+          : '';
+        const names = { story: 'סטורי', carousel: 'קרוסלה', reel: 'ריל' };
+        const avg = s.avg_duration_by_type || {};
+        const avgStr = ['story', 'carousel', 'reel'].map((t) => `${names[t]} ${(avg[t] && avg[t].avgSeconds != null) ? avg[t].avgSeconds + 's' : '—'}`).join(' · ');
+        const lim = s.daily_limits && s.daily_limits.used ? s.daily_limits : { used: {}, limits: {} };
+        // This bar is the GLOBAL state only. A client receives content only if it is
+        // ALSO opted in individually, so the bar reports how many are — otherwise
+        // '🟢 פעיל' reads as "everyone is getting content", which it never means.
+        const optedIn = clients.filter((c) => c.scheduled_content_enabled && c.status === 'active').length;
+        const optedNote = clients.length
+          ? `<span class="hint">${optedIn} מתוך ${clients.length} לקוחות מופעלים לתזמון${optedIn ? '' : ' — לא יישלח תוכן לאף אחד'}</span>`
+          : '';
+        $('globalbar').innerHTML = `
+          <div class="gb-row"><b>מתזמן תוכן (גלובלי):</b> <span>${label}</span> ${btn} ${optedNote}</div>
+          <div class="gb-metrics">
+            <span>בתור: ${q.scheduled}</span>
+            <span>פעילים: ${q.generating + q.sending}</span>
+            <span>נשלחו: ${q.delivered}</span>
+            <span>נכשלו: ${q.failed}</span>
+            <span class="${q.unknown_delivery_state ? 'warn' : ''}">מצב לא ידוע: ${q.unknown_delivery_state}</span>
+            <span>הוחמצו: ${q.missed}</span>
+            <span>ותיק בתור: ${fmtDateTime(q.oldest_queued)}</span>
+            <span>קונקרנטיות S/C/R: ${s.concurrency.story}/${s.concurrency.carousel}/${s.concurrency.reel}</span>
+            <span>זמן ממוצע: ${avgStr}</span>
+            <span>מכסת ספק היום (S/C/R/WA): ${lim.used.story || 0}/${lim.used.carousel || 0}/${lim.used.reel || 0}/${lim.used.whatsapp || 0}</span>
+          </div>`;
+      } catch { $('globalbar').innerHTML = ''; }
+    }
+    async function pauseScheduler() { try { await api('POST', '/scheduler/pause'); toast('המתזמן הושהה'); renderGlobalBar(); } catch (e) { toast('שגיאה: ' + e.message); } }
+    async function resumeScheduler() { try { await api('POST', '/scheduler/resume'); toast('המתזמן חודש'); renderGlobalBar(); } catch (e) { toast('שגיאה: ' + e.message); } }
+    async function retryDelivery(id) {
+      try { await api('POST', '/deliveries/' + id + '/retry'); toast('נשלח לתור מחדש'); if (current) await selectClient(current); renderGlobalBar(); }
+      catch (e) { toast('שגיאה: ' + e.message); }
+    }
+
     function editorTemplate(c) {
       const pr = c.profile || {};
       const bi = pr.brand_identity || {};
+      const sc = c.schedule || null;
       return `
       <div class="actions" style="margin-bottom:16px">
         <h2>${c.phone ? 'עריכת לקוח' : 'לקוח חדש'}</h2>
+        ${c.usage ? `<span class="pill" title="שימוש החודש מול מכסת החבילה">🖼 ${c.usage.images}/${c.usage.imagesLimit}${c.usage.videosLimit ? ` · 🎬 ${c.usage.videos}/${c.usage.videosLimit}` : ''}</span>` : ''}
         <div class="spacer"></div>
         ${c.phone ? '<button class="btn" onclick="generateNow()">✨ צור תוכן עכשיו</button>' : ''}
         ${c.phone ? '<button class="btn danger" onclick="removeClient()">מחיקה</button>' : ''}
@@ -262,19 +533,64 @@
         <div class="field"><label>טלפון ווטסאפ (ספרות בלבד, כולל קידומת מדינה)</label><input id="f_phone" value="${P(c.phone)}" placeholder="972501234567"></div>
         <div class="row">
           <div class="field"><label>חבילה</label>
-            <select id="f_package">
+            <select id="f_package" onchange="onPackageChange()">
               <option value="basic" ${c.package !== 'premium' ? 'selected' : ''}>בסיסית</option>
               <option value="premium" ${c.package === 'premium' ? 'selected' : ''}>מורחבת (כולל וידאו)</option>
             </select>
           </div>
           <div class="field"><label>סטטוס</label>
             <select id="f_status">
-              <option value="active" ${c.status !== 'paused' ? 'selected' : ''}>פעיל</option>
-              <option value="paused" ${c.status === 'paused' ? 'selected' : ''}>מושהה</option>
+              <option value="active" ${!['suspended', 'canceled'].includes(c.status) ? 'selected' : ''}>פעיל</option>
+              <option value="suspended" ${c.status === 'suspended' ? 'selected' : ''}>מושהה (הודעה חד פעמית ללקוח)</option>
+              <option value="canceled" ${c.status === 'canceled' ? 'selected' : ''}>מבוטל (החשבון נסגר לצמיתות)</option>
             </select>
           </div>
         </div>
       </fieldset>
+
+      <fieldset>
+        <legend>תשלום ומנוי</legend>
+        <div class="row">
+          <div class="field">
+            <label>מועד תשלום אחרון</label>
+            <input type="datetime-local" id="f_paid_at" lang="en-GB" value="${toLocalInput(c.paid_at)}" onchange="autoFillSubEnd()">
+          </div>
+          <div class="field">
+            <label>המנוי מסתיים ב־ <span class="hint">(ברירת מחדל: חודש מהתשלום)</span></label>
+            <input type="datetime-local" id="f_sub_end" lang="en-GB" value="${toLocalInput(c.subscription_ends_at)}">
+          </div>
+        </div>
+        ${subSummary(c)}
+      </fieldset>
+
+      <fieldset>
+        <legend>תזמון שליחה יומי</legend>
+        <div class="row">
+          <div class="field"><label>תאריך רישום <span class="hint">(עוגן המחזורים)</span></label>
+            <input type="datetime-local" id="f_reg" lang="en-GB" value="${toLocalInput(c.registration_date)}"></div>
+          <div class="field"><label>שעת שליחה יומית <span class="hint">(24 שעות)</span></label>
+            <input type="text" id="f_send_time" dir="ltr" inputmode="numeric" maxlength="5"
+                   pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]" placeholder="HH:MM"
+                   style="text-align:left" value="${P(c.send_time) || '07:30'}"></div>
+        </div>
+        <div class="field"><label>אזור זמן (IANA)</label>
+          <input id="f_tz" value="${P(c.timezone) || 'Asia/Jerusalem'}" placeholder="Asia/Jerusalem">
+          <div class="hint">ברירת מחדל 07:30 · Asia/Jerusalem. השעה בפורמט 24 שעות (למשל 22:09 לעשר ותשע בערב) — אין AM/PM.
+            שינוי השעה משפיע רק על משלוחים עתידיים; המכסה וההיסטוריה נשמרות.</div></div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="f_sce" ${c.scheduled_content_enabled ? 'checked' : ''} style="width:auto;margin:0">
+            הפעל שליחת תוכן מתוזמן ללקוח זה
+          </label>
+          <div class="hint">כבוי כברירת מחדל. תוכן יישלח רק אם גם המתג הגלובלי דלוק, הלקוח פעיל, והתיבה הזו מסומנת.</div>
+        </div>
+        <div class="field">
+          <label>לוח שבועי <span class="hint">(מה מקבל הלקוח בכל יום, עד גובה מכסת החבילה)</span></label>
+          ${sc ? weekGrid(sc) : '<div class="hint">הלוח ייפתח לעריכה אחרי שמירת הלקוח. עד אז חלה פריסת ברירת המחדל של החבילה: סטוריז בכל יום, קרוסלה וריל בראשון.</div>'}
+        </div>
+      </fieldset>
+
+      ${sc ? scheduleSection(sc) : ''}
 
       <fieldset>
         <legend>אפיון העסק</legend>
@@ -302,12 +618,19 @@
       </div>`;
     }
 
-    function selectClient(phone) {
+    async function selectClient(phone) {
       current = phone;
-      const c = clients.find((x) => x.phone === phone);
-      if (!c) return;
-      $('editor').innerHTML = editorTemplate(c);
       renderList();
+      try {
+        // Fetch the full detail (includes live schedule + quota) rather than the light list row.
+        const c = await api('GET', '/clients/' + encodeURIComponent(phone));
+        $('editor').innerHTML = editorTemplate(c);
+        renderWeekTotals();
+      } catch (e) {
+        const fallback = clients.find((x) => x.phone === phone);
+        if (fallback) $('editor').innerHTML = editorTemplate(fallback);
+        else toast('שגיאה בטעינת לקוח: ' + e.message);
+      }
     }
     function newClient() {
       current = null;
@@ -317,6 +640,13 @@
 
     const lines = (id) => $(id).value.split('\n').map((s) => s.trim()).filter(Boolean);
     const val = (id) => $(id).value.trim();
+    // datetime-local value -> ISO string, or null when empty/unparseable.
+    function isoOrNull(id) {
+      const v = val(id);
+      if (!v) return null;
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
 
     async function saveClient() {
       const body = {
@@ -325,6 +655,13 @@
         business_name: val('f_business'),
         package: val('f_package'),
         status: val('f_status'),
+        paid_at: isoOrNull('f_paid_at'),
+        subscription_ends_at: isoOrNull('f_sub_end'),
+        registration_date: isoOrNull('f_reg'),
+        send_time: val('f_send_time') || null,
+        timezone: val('f_tz') || null,
+        scheduled_content_enabled: $('f_sce') ? $('f_sce').checked : false,
+        schedule: readWeekGrid(),
         profile: {
           about: val('p_about'),
           audience: val('p_audience'),
@@ -344,11 +681,20 @@
       if (!body.phone || !body.name || !body.business_name) {
         return toast('חובה למלא שם, שם עסק וטלפון');
       }
+      if (body.paid_at && new Date(body.paid_at).getTime() > Date.now() + 5 * 60 * 1000) {
+        return toast('מועד התשלום לא יכול להיות בעתיד');
+      }
+      if (body.paid_at && body.subscription_ends_at && body.subscription_ends_at <= body.paid_at) {
+        return toast('תאריך סיום המנוי חייב להיות אחרי מועד התשלום');
+      }
+      if (!body.paid_at && body.subscription_ends_at) {
+        return toast('נקבע תאריך סיום מנוי בלי מועד תשלום — מלאי קודם את מועד התשלום');
+      }
       try {
         const saved = await api('POST', '/clients', body);
         current = saved.phone;
         await loadClients();
-        toast('נשמר בהצלחה');
+        toast(saved.reactivated ? 'נשמר — תשלום חדש נרשם והלקוח חזר לפעיל ✅' : 'נשמר בהצלחה');
       } catch (e) { toast('שגיאה: ' + e.message); }
     }
 
