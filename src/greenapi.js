@@ -5,6 +5,16 @@ function url(method, { media = false } = {}) {
   return `${media ? mediaUrl : baseUrl}/waInstance${idInstance}/${method}/${token}`;
 }
 
+// A 4xx from Green API is a rejected REQUEST — a number WhatsApp does not have,
+// a malformed field — and retrying it just burns attempts and delays the real
+// signal. 429 is the exception: that one clears on its own. Everything else
+// (5xx, network, timeout) stays retryable.
+function failure(method, status, text) {
+  const err = new Error(`Green API ${method} failed: ${status} ${text}`);
+  if (status >= 400 && status < 500 && status !== 429) err.terminal = true;
+  return err;
+}
+
 async function post(method, body) {
   const res = await fetch(url(method), {
     method: 'POST',
@@ -13,7 +23,7 @@ async function post(method, body) {
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
-    throw new Error(`Green API ${method} failed: ${res.status} ${await res.text()}`);
+    throw failure(method, res.status, await res.text());
   }
   return res.json();
 }
@@ -65,7 +75,7 @@ async function uploadFile(buffer, contentType = 'image/png') {
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
-    throw new Error(`Green API uploadFile failed: ${res.status} ${await res.text()}`);
+    throw failure('uploadFile', res.status, await res.text());
   }
   const data = await res.json();
   if (!data || !data.urlFile) {

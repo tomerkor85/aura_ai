@@ -130,6 +130,38 @@ test('A day sealed at signup is never credited — it was never owed', () => {
   assert.equal(h.missedNotices.length, 0, 'and no apology for content that was never due');
 });
 
+test('A rejected recipient fails immediately instead of burning retries', async () => {
+  const db = makeDb();
+  addClient(db, { phone: '1', registration_date: REG });
+  let sends = 0;
+  const fakes = makeFakes({
+    senders: {
+      sendText: async () => ({ idMessage: 't' }),
+      // What Green API answers for a number WhatsApp does not have. Retrying it
+      // can never succeed, so it must not consume the retry budget.
+      sendVisual: async () => {
+        sends++;
+        const e = new Error("Green API sendFileByUrl failed: 400 'chatId': invalid phone number");
+        e.terminal = true;
+        throw e;
+      },
+      sendFileByUrl: async () => ({ idMessage: 'f' }),
+    },
+  });
+  const h = makeHarness(db, { fakes, config: { maxRetries: 3, backoffBaseMs: 1 } });
+  D.enqueueItems(db, [storyItem('1', 1)]);
+
+  await drain(db, h.queue, h.clock);
+  h.clock.advance(5);
+  await drain(db, h.queue, h.clock);
+
+  const row = db.prepare("SELECT status, retry_count FROM content_deliveries WHERE content_type='story'").get();
+  assert.equal(row.status, 'failed');
+  assert.equal(row.retry_count, 0, 'no retries were spent on a recipient that cannot receive');
+  assert.equal(sends, 1, 'and the send was attempted exactly once');
+  assert.equal(h.media.files.size, 0, 'the cached asset is dropped on terminal failure');
+});
+
 test('A failed send retries the send, never the paid generation', async () => {
   const db = makeDb();
   addClient(db, { phone: '1', registration_date: REG });
